@@ -1,0 +1,8 @@
+skill_id: seo.keyword-clustering
+version: 1.0.0
+applies_to_agent: [planner]
+description: Agrupa termos por intenção e entidade, evitando listas por semelhança superficial.
+rules: ["Agrupar por intenção e jornada", "Separar termos ambíguos", "Registrar a justificativa de cada cluster"]
+examples_good: ["plano de internet: velocidade, cobertura, franquia e fidelidade"]
+examples_bad: ["Lista alfabética de palavras relacionadas"]
+llm_hint_template: "Produza clusters úteis para perguntas de pesquisa, não para repetição de palavra-chave."

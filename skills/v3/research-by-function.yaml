@@ -1,0 +1,22 @@
+skill_id: v3.research-by-function
+version: 2.0.0
+applies_to_agent: [research_planner, researcher]
+description: Planeja e executa pesquisa por função de evidência, com política rígida contra e-commerce transacional.
+rules:
+  - "Toda consulta deve apontar para um nó de conhecimento e um papel de evidência"
+  - "Usar busca como descoberta; avaliar a página pelo conteúdo, autoria, referências, independência e profundidade"
+  - "Nunca usar posição na busca como score de autoridade"
+  - "Rejeitar páginas de produto, categoria, loja, marketplace, landing comercial, carrinho e checkout"
+  - "Blog de e-commerce pode gerar leads ou comparação, mas nunca sustenta sozinho uma afirmação factual"
+  - "Uma alegação vinda de blog de e-commerce exige duas fontes independentes não comerciais e não pode sustentar conclusão absoluta"
+  - "Blog de e-commerce não conta para diversidade de fontes e não pode ser link externo recomendado para o método"
+  - "Priorizar artigos primários, revisões, repositórios acadêmicos, instituições, guias técnicos independentes, notícias e enciclopédias conforme a função"
+  - "Triangular claims críticos com fontes de funções complementares"
+  - "Usar fontes comunitárias para descobrir dúvidas, nunca como única sustentação técnica"
+  - "Reformular perguntas universais quando a resposta depender de método ou condição"
+examples_good:
+  - "Buscar mecanismo em revisão científica, sequência em guia institucional e usar alegação de loja apenas como hipótese comparativa a ser confirmada"
+examples_bad:
+  - "Usar automaticamente os três primeiros resultados"
+  - "Aceitar uma página de produto porque contém uma explicação longa sobre o tema"
+llm_hint_template: "Classifique a fonte antes de ler o claim: autoridade vem da função e independência, não do ranking."

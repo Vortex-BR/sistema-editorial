@@ -1,0 +1,352 @@
+name: Quality gate and Docker build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  CI_MERGE_SHA: ${{ github.sha }}
+  IMAGE_SOURCE: ${{ github.server_url }}/${{ github.repository }}
+
+jobs:
+  backend-quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r backend/requirements.txt
+      - name: Run Ruff
+        run: python -m ruff check backend
+      - name: Run backend tests without external services
+        run: >-
+          python -m pytest -q backend/tests
+          --ignore=backend/tests/test_celery_dispatch_e2e.py
+          --ignore=backend/tests/test_migrations_integration.py
+          --ignore=backend/tests/test_pipeline_dispatch_broker_integration.py
+          --ignore=backend/tests/test_pipeline_dispatch_integration.py
+          --ignore=backend/tests/test_pipeline_integration.py
+          --ignore=backend/tests/test_redis_integration.py
+
+  frontend-quality:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Run frontend tests
+        run: npm test
+      - name: Run frontend lint
+        run: npm run lint
+      - name: Build frontend
+        run: npm run build
+
+  integration-tests:
+    needs: [backend-quality, frontend-quality]
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_DB: seo_integration_test
+          POSTGRES_USER: seo
+          POSTGRES_PASSWORD: test-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U seo -d seo_integration_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7.4-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      TEST_DATABASE_URL: postgresql+asyncpg://seo:test-password@127.0.0.1:5432/seo_integration_test
+      TEST_POSTGRES_ADMIN_URL: postgresql+asyncpg://seo:test-password@127.0.0.1:5432/postgres
+      TEST_REDIS_URL: redis://127.0.0.1:6379/0
+      REDIS_URL: redis://127.0.0.1:6379/0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+      - name: Verify PostgreSQL 17 and install pgvector in the empty database
+        run: |
+          python - <<'PY'
+          import asyncio
+          import os
+
+          import asyncpg
+
+          async def verify():
+              url = os.environ["TEST_DATABASE_URL"].replace(
+                  "postgresql+asyncpg://", "postgresql://", 1
+              )
+              connection = await asyncpg.connect(url)
+              try:
+                  server_version_num = int(
+                      await connection.fetchval("SHOW server_version_num")
+                  )
+                  assert 170000 <= server_version_num < 180000, server_version_num
+                  await connection.execute("CREATE EXTENSION IF NOT EXISTS vector")
+                  vector_version = await connection.fetchval(
+                      "SELECT extversion FROM pg_extension WHERE extname = 'vector'"
+                  )
+                  assert vector_version, "pgvector extension was not installed"
+                  print(
+                      f"PostgreSQL server_version_num={server_version_num}; "
+                      f"pgvector={vector_version}"
+                  )
+              finally:
+                  await connection.close()
+
+          asyncio.run(verify())
+          PY
+      - name: Apply real migrations to the integration database
+        env:
+          DATABASE_URL: postgresql+asyncpg://seo:test-password@127.0.0.1:5432/seo_integration_test
+        run: |
+          python -m alembic upgrade head
+          python -m alembic current
+      - name: Run PostgreSQL and Redis integration tests
+        run: >-
+          python -m pytest -q
+          tests/test_pipeline_integration.py
+          tests/test_pipeline_dispatch_integration.py
+          tests/test_pipeline_dispatch_broker_integration.py
+          tests/test_migrations_integration.py
+          tests/test_redis_integration.py
+      - name: Run real Celery solo and prefork E2E
+        env:
+          RUN_CELERY_E2E: "1"
+        run: python -m pytest -q tests/test_celery_dispatch_e2e.py
+
+  docker-build:
+    needs: [backend-quality, frontend-quality, integration-tests]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+      - name: Verify candidate checkout
+        id: candidate
+        shell: bash
+        run: |
+          checkout_sha="$(git rev-parse HEAD)"
+          source_digest="$(git rev-parse HEAD^{tree})"
+          test "${checkout_sha}" = "${CANDIDATE_SHA}"
+          printf 'CANDIDATE_SHA: %s\n' "${CANDIDATE_SHA}"
+          printf 'CI_MERGE_SHA: %s\n' "${CI_MERGE_SHA}"
+          printf 'CHECKOUT_SHA: %s\n' "${checkout_sha}"
+          printf 'SOURCE_DIGEST: %s\n' "${source_digest}"
+          echo "source_digest=${source_digest}" >> "${GITHUB_OUTPUT}"
+      - uses: docker/setup-buildx-action@v3
+      - name: Build production image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          tags: seo-research-ledger:candidate-${{ env.CANDIDATE_SHA }}
+          build-args: |
+            APP_COMMIT_SHA=${{ env.CANDIDATE_SHA }}
+            APP_BUILD_VERSION=github-actions-${{ github.run_id }}-${{ github.run_attempt }}
+            APP_SOURCE_DIGEST=${{ steps.candidate.outputs.source_digest }}
+            APP_IMAGE_SOURCE=${{ env.IMAGE_SOURCE }}
+
+  image-smoke:
+    needs: docker-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RESOURCE_PREFIX: ${{ github.repository }}-${{ github.run_id }}-image-smoke-${{ github.run_attempt }}
+      EXPECTED_ALEMBIC_HEAD: "0032"
+      EXPECTED_PGVECTOR_VERSION: "0.8.5"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Resolve image metadata
+        id: image_metadata
+        shell: bash
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT_SHA: ${{ github.sha }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+
+          candidate_sha="${PR_HEAD_SHA:-$EVENT_SHA}"
+
+          if [ -z "${candidate_sha}" ]; then
+            echo "candidate SHA could not be resolved" >&2
+            exit 1
+          fi
+
+          short_sha="${candidate_sha:0:12}"
+          image_source="https://github.com/${REPOSITORY}"
+          build_version="github-actions-${RUN_ID}-${RUN_ATTEMPT}"
+          source_digest="$(git rev-parse HEAD^{tree})"
+
+          {
+            echo "candidate_sha=${candidate_sha}"
+            echo "short_sha=${short_sha}"
+            echo "ci_merge_sha=${EVENT_SHA}"
+            echo "image_source=${image_source}"
+            echo "build_version=${build_version}"
+            echo "source_digest=${source_digest}"
+            echo "image_tag=seo-research-ledger:smoke-${short_sha}"
+          } >> "${GITHUB_OUTPUT}"
+      - name: Verify candidate checkout
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ steps.image_metadata.outputs.candidate_sha }}
+          CI_MERGE_SHA: ${{ steps.image_metadata.outputs.ci_merge_sha }}
+        run: |
+          set -euo pipefail
+
+          checkout_sha="$(git rev-parse HEAD)"
+
+          echo "Candidate SHA: ${CANDIDATE_SHA}"
+          echo "CI merge SHA: ${CI_MERGE_SHA}"
+          echo "Checkout SHA: ${checkout_sha}"
+
+          if [ "${checkout_sha}" != "${CANDIDATE_SHA}" ]; then
+            echo "checkout SHA does not match candidate SHA" >&2
+            exit 1
+          fi
+      - uses: docker/setup-buildx-action@v3
+      - name: Build and load the SHA-tagged production image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          load: true
+          push: false
+          tags: ${{ steps.image_metadata.outputs.image_tag }}
+          build-args: |
+            APP_COMMIT_SHA=${{ steps.image_metadata.outputs.candidate_sha }}
+            APP_BUILD_VERSION=${{ steps.image_metadata.outputs.build_version }}
+            APP_SOURCE_DIGEST=${{ steps.image_metadata.outputs.source_digest }}
+            APP_IMAGE_SOURCE=${{ steps.image_metadata.outputs.image_source }}
+          labels: |
+            org.opencontainers.image.revision=${{ steps.image_metadata.outputs.candidate_sha }}
+            org.opencontainers.image.version=${{ steps.image_metadata.outputs.build_version }}
+            org.opencontainers.image.source=${{ steps.image_metadata.outputs.image_source }}
+      - name: Run the production image smoke test
+        shell: bash
+        env:
+          IMAGE_TAG: ${{ steps.image_metadata.outputs.image_tag }}
+          CANDIDATE_SHA: ${{ steps.image_metadata.outputs.candidate_sha }}
+          CI_MERGE_SHA: ${{ steps.image_metadata.outputs.ci_merge_sha }}
+          EXPECTED_APP_COMMIT_SHA: ${{ steps.image_metadata.outputs.candidate_sha }}
+          EXPECTED_APP_BUILD_VERSION: ${{ steps.image_metadata.outputs.build_version }}
+          EXPECTED_APP_SOURCE_DIGEST: ${{ steps.image_metadata.outputs.source_digest }}
+          EXPECTED_IMAGE_SOURCE: ${{ steps.image_metadata.outputs.image_source }}
+        run: bash scripts/ci/image-smoke.sh
+      - name: Show production smoke diagnostics
+        if: failure()
+        shell: bash
+        env:
+          IMAGE_TAG: ${{ steps.image_metadata.outputs.image_tag }}
+          CANDIDATE_SHA: ${{ steps.image_metadata.outputs.candidate_sha }}
+          CI_MERGE_SHA: ${{ steps.image_metadata.outputs.ci_merge_sha }}
+          EXPECTED_APP_COMMIT_SHA: ${{ steps.image_metadata.outputs.candidate_sha }}
+          EXPECTED_APP_BUILD_VERSION: ${{ steps.image_metadata.outputs.build_version }}
+          EXPECTED_APP_SOURCE_DIGEST: ${{ steps.image_metadata.outputs.source_digest }}
+          EXPECTED_IMAGE_SOURCE: ${{ steps.image_metadata.outputs.image_source }}
+        run: bash scripts/ci/image-smoke.sh diagnostics
+      - name: Remove only image-smoke resources
+        if: always()
+        shell: bash
+        env:
+          IMAGE_TAG: ${{ steps.image_metadata.outputs.image_tag }}
+          CANDIDATE_SHA: ${{ steps.image_metadata.outputs.candidate_sha }}
+          CI_MERGE_SHA: ${{ steps.image_metadata.outputs.ci_merge_sha }}
+          EXPECTED_APP_COMMIT_SHA: ${{ steps.image_metadata.outputs.candidate_sha }}
+          EXPECTED_APP_BUILD_VERSION: ${{ steps.image_metadata.outputs.build_version }}
+          EXPECTED_APP_SOURCE_DIGEST: ${{ steps.image_metadata.outputs.source_digest }}
+          EXPECTED_IMAGE_SOURCE: ${{ steps.image_metadata.outputs.image_source }}
+        run: bash scripts/ci/image-smoke.sh cleanup
+
+  publish-image:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: image-smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+      - name: Resolve immutable image metadata
+        id: image
+        shell: bash
+        run: |
+          echo "source_digest=$(git rev-parse HEAD^{tree})" >> "${GITHUB_OUTPUT}"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/metadata-action@v5
+        id: metadata
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=sha-${{ env.CANDIDATE_SHA }}
+      - name: Publish immutable production image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          build-args: |
+            APP_COMMIT_SHA=${{ env.CANDIDATE_SHA }}
+            APP_BUILD_VERSION=github-actions-${{ github.run_id }}-${{ github.run_attempt }}
+            APP_SOURCE_DIGEST=${{ steps.image.outputs.source_digest }}
+            APP_IMAGE_SOURCE=${{ env.IMAGE_SOURCE }}

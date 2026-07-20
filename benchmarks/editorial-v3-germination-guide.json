@@ -1,0 +1,99 @@
+{
+  "benchmark_id": "procedural-guide-germination-v1",
+  "pipeline_contract_version": "editorial-v3",
+  "topic": "germinação de sementes de cannabis",
+  "content_type": "procedural_decision_guide",
+  "reader_start_state": "Leitor que precisa compreender a semente, os estágios do processo e as alternativas antes de escolher um método.",
+  "reader_final_state": "Leitor capaz de reconhecer a emergência da plântula no substrato e compreender que o escopo deste guia terminou.",
+  "article_promise": "Explicar a semente, apresentar e comparar os métodos de germinação sustentados pela pesquisa, orientar uma escolha contextual, acompanhar a execução e concluir quando a plântula emergir do substrato.",
+  "scope_limit": "O conteúdo termina na emergência da plântula e não avança para um guia completo de cultivo.",
+  "required_node_order": [
+    "subject_foundation",
+    "method_inventory",
+    "process_requirements",
+    "method_comparison",
+    "method_selection",
+    "method_execution",
+    "progress_confirmation",
+    "transition_decision",
+    "transition_execution",
+    "post_transition_monitoring",
+    "final_outcome_confirmation",
+    "troubleshooting",
+    "external_references"
+  ],
+  "acceptance_requirements": {
+    "minimum_methods": 4,
+    "method_variations_must_be_deduplicated": true,
+    "external_reference_per_method": true,
+    "decision_matrix_required": true,
+    "observable_progress_signals_required": true,
+    "observable_transition_criteria_required": true,
+    "supported_corrections_required": true,
+    "must_reach_final_outcome": true,
+    "minimum_quality_score": 0.85,
+    "minimum_claims_per_method": 3,
+    "minimum_steps_per_method": 3,
+    "required_method_headings": true,
+    "minimum_target_words": 2600,
+    "opening_must_orient_before_numeric_thresholds": true,
+    "method_overview_before_shared_conditions": true,
+    "shared_conditions_must_explain_importance_maintenance_and_excess": true,
+    "body_prose_must_not_be_summary_like": true,
+    "minimum_opening_method_mentions": 2,
+    "minimum_process_requirements_words": 280
+  },
+  "critical_blockers": [
+    "method without executable sequence",
+    "method without observable advancement criterion",
+    "missing contextual selection logic",
+    "transition based only on elapsed time",
+    "unresolved essential knowledge gap",
+    "unsupported correction",
+    "invented or irrelevant external reference",
+    "article ending before final outcome",
+    "scope promise larger than delivered content",
+    "transactional ecommerce source used as evidence",
+    "ecommerce blog used as sole or absolute support",
+    "commercial source counted as independent corroboration",
+    "ecommerce or marketplace used as external method reference"
+  ],
+  "source_policy_requirements": {
+    "search_rank_must_not_define_authority": true,
+    "reject_transactional_ecommerce": true,
+    "reject_marketplaces": true,
+    "ecommerce_blog_usage": "comparison_only",
+    "ecommerce_blog_min_independent_noncommercial_corroborators": 2,
+    "ecommerce_blog_can_support_absolute_claim": false,
+    "ecommerce_blog_can_be_external_reference": false,
+    "commercial_sources_count_toward_independent_diversity": false,
+    "prioritize": [
+      "scientific_primary",
+      "scientific_review",
+      "academic_repository",
+      "scientific_database",
+      "institutional",
+      "technical_procedural",
+      "independent_editorial",
+      "news_reporting",
+      "encyclopedic_discovery"
+    ]
+  },
+  "required_methods": [
+    "papel-toalha",
+    "copo com água",
+    "jiffy",
+    "plantio direto no substrato"
+  ],
+  "human_editorial_profile": {
+    "opening": "Começar pela dúvida e pela escolha do leitor; apresentar os métodos antes de faixas técnicas.",
+    "body": "Parágrafos desenvolvidos, com contexto, contraste, aplicação e transições próprias; evitar uma frase-resumo por fato.",
+    "rhythm": "Alternar frases curtas e médias conforme a função, variar o tamanho dos parágrafos e não repetir a mesma abertura sintática.",
+    "prohibited_shortcuts": [
+      "iniciar com Durante a germinação seguido de números",
+      "encadear subtítulos com um único parágrafo-resumo",
+      "repetir definição, recomendação e conclusão na mesma fórmula",
+      "escrever como relatório de fatos ou apostila condensada"
+    ]
+  }
+}

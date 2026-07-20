@@ -1,0 +1,41 @@
+skill_id: seo.wordpress-yoast-premium
+version: 1.0.0
+applies_to_agent: [planner, writer, editor, finalizer]
+description: >-
+  Planeja, redige, revisa e empacota conteúdo comercial para WordPress com
+  Yoast SEO Premium, equilibrando intenção de busca, persuasão, evidência,
+  legibilidade e uma voz editorial humana. As métricas são sinais de revisão,
+  nunca uma fórmula que se sobrepõe à clareza ou à verdade.
+rules:
+  - "Priorizar nesta ordem: intenção e utilidade para o leitor; precisão e evidência; proposta comercial e voz da marca; legibilidade; indicadores do Yoast. Nunca piorar o texto apenas para obter uma luz verde."
+  - "Definir uma frase-chave foco coerente com a intenção principal e frases relacionadas para subtemas reais. Usar variações, flexões e sinônimos reconhecíveis pelo Yoast Premium; não repetir mecanicamente a correspondência exata."
+  - "Incluir a frase-chave foco naturalmente no título SEO, introdução, slug e meta description. Usá-la ou usar um sinônimo em alguns subtítulos somente quando descreve de fato a seção."
+  - "Não perseguir densidade fixa. Distribuir o tema ao longo do texto, eliminar keyword stuffing e reler cada ocorrência: se não ajuda o leitor, reescrever ou remover."
+  - "Responder à promessa principal cedo. Organizar H2 e H3 por decisões, dúvidas, objeções ou etapas do leitor; usar um único H1 e evitar saltos artificiais na hierarquia."
+  - "Tratar 30% ou mais de frases com palavras de transição como referência do Yoast. Usar conectores que expressem a relação lógica real — causa, contraste, exemplo, sequência ou conclusão — sem iniciar parágrafos com bordões repetidos."
+  - "Usar como referência operacional no texto corrido no máximo 25% de frases com mais de 20 palavras. Variar ritmo e preservar uma frase longa quando ela for a forma mais clara e natural; o resultado exibido pelo Yoast no idioma da página é a verificação final."
+  - "Manter a maioria dos parágrafos abaixo de 150 palavras e concentrar cada parágrafo em uma ideia. Dividir por mudança de raciocínio, não para fabricar blocos de tamanho uniforme."
+  - "Preferir voz ativa e manter a voz passiva em torno de 10% ou menos quando houver alternativa melhor. Preservar a passiva quando o agente for desconhecido, irrelevante ou quando o objeto for o foco legítimo."
+  - "Evitar três ou mais frases consecutivas começando da mesma forma. Alternar construção, extensão e cadência sem recorrer a sinônimos estranhos ou frases telegráficas."
+  - "Em trechos longos, oferecer um subtítulo útil antes que cerca de 300 palavras fiquem sem orientação. Não criar subtítulos vazios apenas para satisfazer a análise."
+  - "Produzir título SEO específico, fiel e atraente, idealmente na faixa de 50 a 60 caracteres; produzir meta description autônoma, fiel e orientada ao benefício, idealmente entre 120 e 155 caracteres. Validar ambos no preview do Yoast, que considera largura visual e contexto."
+  - "Conectar argumento comercial a problema, mecanismo, prova, objeção e próximo passo. Fazer promessas proporcionais às evidências e usar CTA compatível com a intenção; nunca inventar urgência, resultados, depoimentos, experiência ou autoridade."
+  - "Criar originalidade por síntese própria, exemplos específicos, dados rastreáveis, experiência real fornecida pela empresa e decisões editoriais. Nunca tentar burlar detectores, inserir erros de propósito, parafrasear fontes para ocultar origem ou alegar autoria humana inexistente."
+  - "Evitar sinais de prosa genérica: abertura universal, conclusão que apenas repete o texto, excesso de simetria, listas com o mesmo ritmo, superlativos vazios, metáforas clichês e conectores adicionados só para contagem."
+  - "Sugerir links internos por relação real com a jornada e links externos para sustentar fatos. Não inventar URLs. Descrever imagens pelo conteúdo e função; não forçar a frase-chave em texto alternativo."
+  - "Antes de aprovar, ler como diretor de copy e comercial: a peça tem ponto de vista, prova, diferenciação, objeções relevantes, transição natural para a oferta e uma ação clara? Se não tiver, corrigir o raciocínio antes das métricas."
+  - "Registrar para revisão humana qualquer desvio consciente das referências do Yoast e qualquer trecho que dependa de experiência, prova comercial, posicionamento de marca ou informação ainda não fornecida."
+examples_good:
+  - "Por isso, a escolha não depende apenas do preço: o prazo de implantação muda o custo total e o momento do retorno."
+  - "H2: Quando a solução começa a se pagar? — seção que compara prazo, custo e condição de uso com dados citados."
+  - "CTA: Compare os requisitos do seu cenário antes de solicitar uma proposta."
+examples_bad:
+  - "Além disso... Além disso... Além disso... — conectores inseridos apenas para elevar a porcentagem do Yoast."
+  - "A melhor solução definitiva e revolucionária do mercado — promessa sem critério, prova ou contexto."
+  - "Repetir a frase-chave exata em todo H2, no início de cada parágrafo e no texto alternativo das imagens."
+  - "Adicionar erros, coloquialismos aleatórios ou falsas histórias pessoais para parecer escrito por uma pessoa."
+llm_hint_template: >-
+  Use as métricas como alertas de edição, não como metas de geração frase a
+  frase. Preserve irregularidade natural com intenção: varie ritmo, estrutura e
+  profundidade conforme o argumento. Conteúdo confiável nasce de pesquisa,
+  experiência real e revisão humana, não de técnicas para ocultar o uso de IA.

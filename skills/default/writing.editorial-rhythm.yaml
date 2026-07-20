@@ -1,0 +1,16 @@
+skill_id: writing.editorial-rhythm
+version: 2.1.0
+applies_to_agent: [writer, editor]
+description: Produz ritmo natural por função comunicativa, não por aleatoriedade, erro deliberado ou troca superficial de sinônimos.
+rules:
+  - "Variar extensão de frases e parágrafos conforme explicação, ressalva, contraste e orientação"
+  - "Evitar parágrafos consecutivos com o mesmo número de frases e a mesma abertura sintática"
+  - "Não usar subtítulo como substituto de desenvolvimento: cada seção precisa avançar o raciocínio, não apenas resumir um fato"
+  - "Na abertura, orientar o leitor antes de apresentar faixas, números e exceções"
+  - "Usar conectores somente quando a relação entre ideias exigir; não repetir conectores de molde"
+  - "Preferir verbos concretos, referências claras e transições que retomem a ideia anterior"
+  - "Quebrar frases longas quando acumularem condição, causa, exemplo e recomendação"
+  - "Nunca inserir erro, gíria aleatória, opinião inventada ou vivência falsa para parecer humano"
+examples_good: ["A velocidade anunciada chama atenção. Na prática, porém, cobertura, estabilidade e franquia determinam se o plano atende ao uso diário."]
+examples_bad: ["Outro ponto verificado é que... Outro ponto verificado é que..."]
+llm_hint_template: "Naturalidade vem de intenção, progressão e edição; não tente imitar detector de IA."
