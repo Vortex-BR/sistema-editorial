@@ -1,0 +1,28 @@
+title = "SEO Research Ledger Gitleaks policy"
+
+[extend]
+useDefault = true
+
+# These values are deliberately synthetic fixtures used to prove that secret
+# redaction and manifest validation work. Each exception is constrained to one
+# exact literal and one exact test file. Real secrets remain blocked.
+[[allowlists]]
+description = "Synthetic execution-manifest secret fixture"
+condition = "AND"
+regexTarget = "line"
+paths = ['''backend/tests/test_execution_manifest\.py''']
+regexes = ['''sk-secret-value-123456789''']
+
+[[allowlists]]
+description = "Synthetic model-route secret fixture"
+condition = "AND"
+regexTarget = "line"
+paths = ['''backend/tests/test_model_route_policy\.py''']
+regexes = ['''sk-parameter-secret-must-not-appear''']
+
+[[allowlists]]
+description = "Synthetic superior-context secret fixture"
+condition = "AND"
+regexTarget = "line"
+paths = ['''backend/tests/test_superior_context_enforcement\.py''']
+regexes = ['''sk-abcdefghijklmnopqrstuv''']

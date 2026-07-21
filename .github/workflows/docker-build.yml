@@ -113,9 +113,25 @@ jobs:
           echo "$?" > ../npm-audit.exit
           exit 0
       - name: Detect committed secrets
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set +e
+          docker run --rm \
+            -e GIT_CONFIG_COUNT=1 \
+            -e GIT_CONFIG_KEY_0=safe.directory \
+            -e GIT_CONFIG_VALUE_0=/repo \
+            -v "${GITHUB_WORKSPACE}:/repo" \
+            -w /repo \
+            ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
+            git \
+            --redact \
+            --no-banner \
+            --verbose \
+            --report-format sarif \
+            --report-path /repo/gitleaks.sarif \
+            /repo
+          echo "$?" > gitleaks.exit
+          exit 0
       - name: Upload dependency audit reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -124,14 +140,16 @@ jobs:
           path: |
             pip-audit.json
             npm-audit.json
+            gitleaks.sarif
           if-no-files-found: warn
       - name: Enforce dependency security policy
         shell: bash
         run: |
           python_status="$(cat pip-audit.exit)"
           npm_status="$(cat npm-audit.exit)"
-          if [ "${python_status}" != "0" ] || [ "${npm_status}" != "0" ]; then
-            echo "Dependency security policy failed: pip-audit=${python_status}, npm-audit=${npm_status}" >&2
+          gitleaks_status="$(cat gitleaks.exit)"
+          if [ "${python_status}" != "0" ] || [ "${npm_status}" != "0" ] || [ "${gitleaks_status}" != "0" ]; then
+            echo "Dependency security policy failed: pip-audit=${python_status}, npm-audit=${npm_status}, gitleaks=${gitleaks_status}" >&2
             exit 1
           fi
 
