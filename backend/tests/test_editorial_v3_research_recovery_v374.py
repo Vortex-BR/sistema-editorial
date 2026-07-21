@@ -528,3 +528,34 @@ class TestProceduralCorroboration:
         # No procedural corroboration warning since authoritative source is present
         assert not any("procedural corroboration" in w for w in decision.warnings)
 
+
+@pytest.mark.asyncio
+async def test_materialize_synthesis_cleans_old_records_for_idempotency():
+    """Verify that materialize_synthesis cleans old V3MethodDossierRecord,
+    V3DecisionMatrixRecord, V3SectionDossierRecord, and KnowledgeGapRecord rows
+    prior to adding new ones, avoiding duplicates and IntegrityError conflicts."""
+    from app.services.editorial_v3.artifact_repository import V3ArtifactRepository
+    
+    db = AsyncMock()
+    db.scalars = AsyncMock(return_value=SimpleNamespace(all=lambda: []))
+    
+    project_id = uuid4()
+    pipeline_run_id = uuid4()
+    contract_id = uuid4()
+    
+    repo = V3ArtifactRepository(db, project_id=project_id, pipeline_run_id=pipeline_run_id)
+    
+    await repo.materialize_synthesis(
+        contract_id=contract_id,
+        methods=[],
+        sections=[],
+        decision_matrix=None,
+        gaps=[],
+        references={},
+    )
+    
+    # Verify that the 4 delete statements were executed
+    assert db.execute.call_count == 4
+    db.flush.assert_called()
+
+

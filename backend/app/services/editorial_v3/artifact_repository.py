@@ -10,7 +10,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
@@ -548,6 +548,28 @@ class V3ArtifactRepository:
         gaps: list[DraftKnowledgeGap],
         references: dict[str, ExternalReference],
     ) -> tuple[list[MethodDossier], list[SectionDossier], DecisionMatrix | None, list[KnowledgeGap]]:
+        await self.db.execute(
+            delete(V3MethodDossierRecord).where(
+                V3MethodDossierRecord.pipeline_run_id == self.pipeline_run_id
+            )
+        )
+        await self.db.execute(
+            delete(V3DecisionMatrixRecord).where(
+                V3DecisionMatrixRecord.pipeline_run_id == self.pipeline_run_id
+            )
+        )
+        await self.db.execute(
+            delete(V3SectionDossierRecord).where(
+                V3SectionDossierRecord.pipeline_run_id == self.pipeline_run_id
+            )
+        )
+        await self.db.execute(
+            delete(KnowledgeGapRecord).where(
+                KnowledgeGapRecord.contract_id == contract_id
+            )
+        )
+        await self.db.flush()
+
         claim_rows = list(
             (
                 await self.db.scalars(
