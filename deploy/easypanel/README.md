@@ -35,21 +35,21 @@ especialmente porque variáveis do builder aparecem na linha de build.
 
 | Ambiente | Configuração comprovada no repositório |
 |---|---|
-| Docker Compose local, banco novo | `pgvector/pgvector:pg17` |
-| Integração no GitHub Actions | `pgvector/pgvector:pg17` |
-| EasyPanel, instalação nova | `pgvector/pgvector:pg17` |
+| Docker Compose local, banco novo | `pgvector/pgvector:0.8.5-pg17` |
+| Integração no GitHub Actions | `pgvector/pgvector:0.8.5-pg17` |
+| EasyPanel, instalação nova | `pgvector/pgvector:0.8.5-pg17` |
 
 A baseline comprovada é PostgreSQL 17. O ambiente validado executou PostgreSQL
-17.10 e pgvector 0.8.5, mas a tag móvel `pg17` pode trazer outro patch de PG17 ou
-outra versão compatível da extensão; consulte o banco em vez de tratar 17.10 ou
-0.8.5 como pin. Se um ambiente existente usa outra major, não faça downgrade nem
+17.10 e pgvector 0.8.5. A tag `0.8.5-pg17` fixa a versão da extensão;
+continue consultando o banco e os relatórios do Trivy porque a imagem-base ainda
+pode receber correções de distribuição. Se um ambiente existente usa outra major, não faça downgrade nem
 upgrade por simples troca de tag. Primeiro identifique a major com
 `SELECT version();`, preserve o volume e planeje a migração para um volume novo.
 
 ## Instalação nova
 
 1. No mesmo projeto do EasyPanel, crie um serviço PostgreSQL persistente com a
-   imagem `pgvector/pgvector:pg17`. Não use `postgres:17` puro.
+   imagem `pgvector/pgvector:0.8.5-pg17`. Não use `postgres:17` puro.
 2. Configure no serviço PostgreSQL valores próprios para `POSTGRES_DB`,
    `POSTGRES_USER` e `POSTGRES_PASSWORD`, mantendo a porta 5432 apenas na rede
    interna.
@@ -212,8 +212,9 @@ collation; verifique o warning após o restart.
 
 ### Imagem oficial para pgvector na mesma major
 
-Trocar `postgres:17` por `pgvector/pgvector:pg17` mantém a major, mas não elimina
-riscos de distribuição, bibliotecas ou collation. Faça backup e teste a troca
+Trocar `postgres:17` por `pgvector/pgvector:0.8.5-pg17` mantém a major e fixa a
+versão da extensão, mas não elimina riscos de distribuição, bibliotecas ou
+collation. Faça backup e teste a troca
 com uma cópia do volume. Não faça a primeira tentativa diretamente no único
 volume de produção. Depois da troca, instale/confirme `vector`, valide o schema
 e trate eventual mismatch de collation antes de retomar a única réplica do App.

@@ -22,6 +22,7 @@ from app.schemas.editorial_intelligence import (
     ContentIntelligenceState,
     EditorialQuestion,
     EditorialQuestionKind,
+    EmergentEditorialQuestionProposal,
     EvidenceClaimNode,
     EvidenceConflictNode,
     EvidenceGraph,
@@ -181,7 +182,16 @@ _SEMANTIC_EQUIVALENTS = {
     "risco": {"risco", "perigo", "falha", "problema", "risk", "danger", "error"},
     "causa": {"causa", "motivo", "origem", "mecanismo", "cause", "reason", "mechanism"},
     "resultado": {"resultado", "efeito", "consequencia", "consequência", "outcome", "effect"},
+    "quantidade": {"quantidade", "volume", "dose", "nivel", "nível", "amount", "quantity"},
+    "comparacao": {"comparacao", "comparação", "diferenca", "diferença", "versus", "melhor", "pior", "comparison"},
 }
+_SEMANTIC_GENERIC_TOKENS = {
+    "metodo", "método", "processo", "etapa", "conteudo", "conteúdo", "informacao",
+    "informação", "explicar", "leitor", "guia", "forma", "maneira", "contexto",
+    "adequado", "adequada", "correto", "correta", "principal", "importante",
+    "method", "process", "step", "content", "information", "reader", "guide",
+}
+_SEMANTIC_DIMENSIONS = frozenset(_SEMANTIC_EQUIVALENTS)
 
 
 def _semantic_tokens(value: str) -> set[str]:
@@ -200,11 +210,40 @@ def _semantic_alignment(question: str, candidate: str) -> float:
     c_tokens = _semantic_tokens(candidate)
     if not q_tokens or not c_tokens:
         return 0.0
-    overlap = q_tokens & c_tokens
-    directional = len(overlap) / len(q_tokens)
-    jaccard = len(overlap) / len(q_tokens | c_tokens)
+
+    q_anchors = q_tokens - _SEMANTIC_GENERIC_TOKENS
+    c_anchors = c_tokens - _SEMANTIC_GENERIC_TOKENS
+    if not q_anchors or not c_anchors:
+        return 0.0
+
+    q_dimensions = q_anchors & _SEMANTIC_DIMENSIONS
+    c_dimensions = c_anchors & _SEMANTIC_DIMENSIONS
+    if q_dimensions and not (q_dimensions & c_dimensions):
+        # A question about temperature cannot be closed by a claim about a
+        # different measurable dimension merely because both mention a method.
+        return 0.0
+
+    overlap = q_anchors & c_anchors
+    if not overlap:
+        return 0.0
+
+    directional = len(overlap) / len(q_anchors)
+    jaccard = len(overlap) / len(q_anchors | c_anchors)
     sequence = _phrase_coverage(question, candidate)
-    return round(min(1.0, (directional * 0.62) + (jaccard * 0.23) + (sequence * 0.15)), 4)
+    long_anchor_overlap = {
+        token for token in overlap if len(token) >= 6 and token not in _SEMANTIC_DIMENSIONS
+    }
+    anchor_bonus = min(0.12, len(long_anchor_overlap) * 0.04)
+    generic_overlap = len((q_tokens & c_tokens) & _SEMANTIC_GENERIC_TOKENS)
+    generic_penalty = min(0.12, generic_overlap * 0.03)
+    score = (
+        (directional * 0.58)
+        + (jaccard * 0.24)
+        + (sequence * 0.18)
+        + anchor_bonus
+        - generic_penalty
+    )
+    return round(max(0.0, min(1.0, score)), 4)
 
 
 def _canonical_claim_id(state: ContentIntelligenceState, raw: Mapping[str, object]) -> UUID | None:
@@ -360,6 +399,112 @@ class ContentIntelligenceEngine:
             validation=self._planning_validation(questions, sections),
         )
         return self._with_checksum(state)
+
+    def add_emergent_questions(
+        self,
+        state: ContentIntelligenceState,
+        *,
+        proposals: Iterable[EmergentEditorialQuestionProposal],
+        claims: Iterable[Mapping[str, object]],
+        maximum_questions: int,
+    ) -> ContentIntelligenceState:
+        """Add bounded, evidence-grounded questions discovered after research.
+
+        The language model may propose candidates, but deterministic checks own
+        section validity, duplication, evidence relevance and criticality.
+        """
+        if maximum_questions <= 0:
+            return state
+        section_map = {item.section_id: item for item in state.sections}
+        claim_texts: dict[str, list[str]] = defaultdict(list)
+        for raw in claims:
+            section_id = str(raw.get("knowledge_node_id") or "").strip()
+            claim_text = " ".join(str(raw.get("claim_text") or "").split())
+            if section_id in section_map and claim_text:
+                claim_texts[section_id].append(claim_text)
+
+        questions = list(state.questions)
+        existing_ids = {item.question_id for item in questions}
+        accepted: list[EditorialQuestion] = []
+        for proposal in proposals:
+            if len(accepted) >= maximum_questions:
+                break
+            section = section_map.get(proposal.section_id)
+            if section is None or not section.research_required:
+                continue
+            question_text = " ".join(proposal.question.split())
+            if any(
+                max(
+                    _semantic_alignment(question_text, item.question),
+                    _semantic_alignment(item.question, question_text),
+                )
+                >= 0.68
+                for item in questions
+            ):
+                continue
+            evidence_score = max(
+                (
+                    _semantic_alignment(question_text, claim_text)
+                    for claim_text in claim_texts.get(proposal.section_id, [])
+                ),
+                default=0.0,
+            )
+            if evidence_score < 0.20:
+                continue
+            index = len(
+                [item for item in questions if item.section_id == proposal.section_id]
+            ) + 1
+            question_id = _question_id(proposal.section_id, proposal.kind, index)
+            while question_id in existing_ids:
+                index += 1
+                question_id = _question_id(proposal.section_id, proposal.kind, index)
+            accepted_question = EditorialQuestion(
+                question_id=question_id,
+                section_id=proposal.section_id,
+                kind=proposal.kind,
+                question=question_text,
+                critical=bool(proposal.critical and evidence_score >= 0.34),
+                research_required=True,
+                required_evidence_roles=proposal.required_evidence_roles,
+                completion_signal=(
+                    proposal.completion_signal
+                    or "A lacuna emergente é respondida com evidência rastreável."
+                ),
+                origin="emergent",
+                rationale=proposal.rationale,
+            )
+            accepted.append(accepted_question)
+            questions.append(accepted_question)
+            existing_ids.add(question_id)
+
+        if not accepted:
+            return state
+        ids_by_section: dict[str, list[str]] = defaultdict(list)
+        for question in accepted:
+            ids_by_section[question.section_id].append(question.question_id)
+        sections = [
+            section.model_copy(
+                update={
+                    "question_ids": list(
+                        dict.fromkeys(
+                            [*section.question_ids, *ids_by_section.get(section.section_id, [])]
+                        )
+                    )
+                }
+            )
+            for section in state.sections
+        ]
+        updated = state.model_copy(
+            update={
+                "revision": state.revision + 1,
+                "updated_at": _now(),
+                "questions": questions,
+                "sections": sections,
+                "validation": self._planning_validation(questions, sections),
+                "checksum": "",
+            }
+        )
+        return self._with_checksum(updated)
 
     def attach_evidence(
         self,
@@ -1499,6 +1644,8 @@ class ContentIntelligenceEngine:
                     "kind": question.kind.value,
                     "critical": question.critical,
                     "question": question.question,
+                    "origin": question.origin,
+                    "rationale": question.rationale,
                     "completion_signal": question.completion_signal,
                     "answer_contract": {
                         "sentence_id_required": True,

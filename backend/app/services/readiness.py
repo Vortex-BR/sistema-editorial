@@ -15,7 +15,7 @@ from app.services.editorial_roles import normalize_pipeline_version
 from app.workers.celery_app import celery
 
 
-EXPECTED_ALEMBIC_HEAD = "0035"
+EXPECTED_ALEMBIC_HEAD = "0036"
 COMPONENT_ORDER = (
     "postgresql",
     "migrations",

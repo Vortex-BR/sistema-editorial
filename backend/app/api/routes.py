@@ -58,6 +58,8 @@ from app.schemas.api import (
     AgentContextPreviewRequest,
     ConfigRead,
     CredentialRead,
+    CredentialRotationRead,
+    CredentialRotationRequest,
     CredentialVerificationRead,
     CredentialWrite,
     DashboardRead,
@@ -90,6 +92,10 @@ from app.core.errors import redact_sensitive, safe_public_message, safe_public_p
 from app.services.agent_context import AgentContextComposer
 from app.services.embeddings import EmbeddingError, EmbeddingGateway
 from app.services.credential_verification import CredentialVerificationService
+from app.services.credential_rotation import (
+    CredentialRotationError,
+    CredentialRotationService,
+)
 from app.services.editorial_export import EditorialExportService
 from app.services.human_editorial_review import (
     HumanEditorialReviewService,
@@ -768,7 +774,7 @@ async def create_project(
                 "error_code": "EDITORIAL_V3_EXECUTION_DISABLED",
                 "message": (
                     "A execução V3 está desabilitada pela configuração do ambiente. "
-                    "Ative as duas flags V3 somente depois de aplicar a migration 0035 "
+                    "Ative as duas flags V3 somente depois de aplicar a migration 0036 "
                     "e validar as rotas de modelos e pesquisa."
                 ),
             },
@@ -1118,7 +1124,7 @@ async def start_project(
                 "message": (
                     "A execução V3 está desabilitada pela configuração do ambiente. "
                     "Ative EDITORIAL_PIPELINE_V3_ENABLED e "
-                    "EDITORIAL_PIPELINE_V3_EXECUTION_ENABLED após aplicar a migration 0035."
+                    "EDITORIAL_PIPELINE_V3_EXECUTION_ENABLED após aplicar a migration 0036."
                 ),
             },
         )
@@ -2067,6 +2073,33 @@ async def list_credentials(db: AsyncSession = Depends(get_db)):
         )
         for p in CredentialProvider
     ]
+
+
+@router.post(
+    "/config/credentials/rotate-master-key",
+    response_model=CredentialRotationRead,
+    dependencies=[Depends(require_admin)],
+)
+async def rotate_credential_master_key(
+    payload: CredentialRotationRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    if not payload.dry_run and payload.confirmation != "ROTATE":
+        raise HTTPException(
+            422,
+            "Set confirmation to ROTATE before executing credential re-encryption.",
+        )
+    try:
+        result = await CredentialRotationService().execute(
+            db,
+            dry_run=payload.dry_run,
+        )
+    except (CredentialRotationError, VaultError) as exc:
+        await db.rollback()
+        raise HTTPException(409, str(exc)) from exc
+    if not payload.dry_run:
+        await db.commit()
+    return CredentialRotationRead(**result.__dict__)
 
 
 @router.put("/config/routes/{agent_role}", dependencies=[Depends(require_admin)])

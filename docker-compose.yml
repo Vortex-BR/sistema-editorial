@@ -2,7 +2,7 @@ services:
   postgres:
     # Baseline somente para bancos novos/descartáveis. O nome do volume PG17 é
     # intencionalmente diferente: nunca monte um volume PG16 nesta imagem.
-    image: pgvector/pgvector:pg17
+    image: pgvector/pgvector:0.8.5-pg17
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-seo_ledger}
       POSTGRES_USER: ${POSTGRES_USER:-seo}

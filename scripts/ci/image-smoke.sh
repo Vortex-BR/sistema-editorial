@@ -11,6 +11,9 @@ set -Eeuo pipefail
 : "${EXPECTED_IMAGE_SOURCE:?EXPECTED_IMAGE_SOURCE is required}"
 : "${EXPECTED_ALEMBIC_HEAD:?EXPECTED_ALEMBIC_HEAD is required}"
 : "${EXPECTED_PGVECTOR_VERSION:?EXPECTED_PGVECTOR_VERSION is required}"
+: "${POSTGRES_IMAGE:=pgvector/pgvector:0.8.5-pg17}"
+: "${REDIS_IMAGE:=redis:7.4-alpine}"
+: "${PRESERVE_IMAGE:=0}"
 
 PREFIX="$(
   printf '%s' "${RESOURCE_PREFIX}" |
@@ -61,7 +64,7 @@ cleanup_resources() {
   if docker network inspect "${NETWORK_NAME}" >/dev/null 2>&1; then
     docker network rm "${NETWORK_NAME}" >/dev/null 2>&1
   fi
-  if docker image inspect "${IMAGE_TAG}" >/dev/null 2>&1; then
+  if [[ "${PRESERVE_IMAGE}" != "1" ]] && docker image inspect "${IMAGE_TAG}" >/dev/null 2>&1; then
     docker image rm "${IMAGE_TAG}" >/dev/null 2>&1
   fi
   set -e
@@ -95,6 +98,7 @@ redacted_logs() {
     "$(container_env_value "${container}" POSTGRES_PASSWORD)"
     "$(container_env_value "${container}" ADMIN_API_TOKEN)"
     "$(container_env_value "${container}" CREDENTIAL_MASTER_KEY)"
+    "$(container_env_value "${container}" CREDENTIAL_MASTER_KEYS)"
     "$(container_env_value "${container}" DATABASE_URL)"
     "$(container_env_value "${container}" REDIS_URL)"
   )
@@ -127,7 +131,7 @@ show_diagnostics() {
     configured_environment_names="$(
       docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "${id}" |
         sed 's/=.*//' |
-        grep -E '^(APP_[A-Z0-9_]*|DATABASE_URL|REDIS_URL|ADMIN_API_TOKEN|CREDENTIAL_MASTER_KEY|SUPERIOR_SKILLS_MODE|POSTGRES_[A-Z0-9_]*|CELERY_[A-Z0-9_]*|HOME|TMPDIR|SKILLS_PATH)$' |
+        grep -E '^(APP_[A-Z0-9_]*|DATABASE_URL|REDIS_URL|ADMIN_API_TOKEN|CREDENTIAL_MASTER_KEY|CREDENTIAL_MASTER_KEYS|SUPERIOR_SKILLS_MODE|POSTGRES_[A-Z0-9_]*|CELERY_[A-Z0-9_]*|HOME|TMPDIR|SKILLS_PATH)$' |
         sort -u |
         paste -sd, -
     )"
@@ -333,7 +337,7 @@ docker run --detach \
   --health-interval 2s \
   --health-timeout 3s \
   --health-retries 30 \
-  pgvector/pgvector:pg17 >/dev/null
+  "${POSTGRES_IMAGE}" >/dev/null
 
 docker run --detach \
   --name "${REDIS_NAME}" \
@@ -345,7 +349,7 @@ docker run --detach \
   --health-interval 2s \
   --health-timeout 3s \
   --health-retries 30 \
-  redis:7.4-alpine redis-server --save '' --appendonly no >/dev/null
+  "${REDIS_IMAGE}" redis-server --save '' --appendonly no >/dev/null
 
 wait_for_healthy_container "${POSTGRES_NAME}" 45
 wait_for_healthy_container "${REDIS_NAME}" 45

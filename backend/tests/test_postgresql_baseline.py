@@ -2,7 +2,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).parents[2]
-PG17_IMAGE = "pgvector/pgvector:pg17"
+PG17_IMAGE = "pgvector/pgvector:0.8.5-pg17"
 PG16_IMAGE = "pgvector/pgvector:pg16"
 
 
@@ -33,7 +33,7 @@ def test_operator_documentation_records_validated_versions_without_false_pin():
     for version in ("17.10", "0.8.5"):
         assert version in readme
         assert version in easypanel
-    assert "não fixa" in readme
-    assert "como pin" in easypanel
+    assert "fixa a extensão" in readme
+    assert "fixa a versão da extensão" in easypanel
     assert "volume PG16" in readme
     assert "volume PG16" in easypanel

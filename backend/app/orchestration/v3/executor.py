@@ -38,6 +38,7 @@ from app.orchestration.v3.stages.knowledge_gate import KnowledgeContractGateStag
 from app.orchestration.v3.state import V3PipelineState, V3Stage
 from app.schemas.editorial_intelligence import (
     ContentIntelligenceState,
+    EmergentEditorialQuestionsOutput,
     IntelligenceLifecycle,
 )
 from app.schemas.editorial_v3 import (
@@ -342,7 +343,7 @@ class EditorialV3Executor:
                 "human_approval",
                 {
                     "message": "O guia V3 passou pelos gates automáticos e aguarda revisão humana final.",
-                    "pipeline_contract_version": "editorial-v3.6.1",
+                    "pipeline_contract_version": "editorial-v3.7",
                 },
                 idempotency_key="v3.pipeline.needs_human_approval",
                 context=self._stage_context,
@@ -1625,6 +1626,107 @@ class EditorialV3Executor:
         state.knowledge_claims = [
             item.model_dump(mode="json") for item in graph_claims
         ]
+        if bool(self._flag("v3_emergent_questions_enabled")):
+            maximum = int(self._flag("v3_max_emergent_questions"))
+            existing_emergent = sum(
+                item.origin == "emergent" for item in intelligence.questions
+            )
+            remaining = max(0, maximum - existing_emergent)
+            if remaining:
+                proposed_count = 0
+                try:
+                    proposal_output = EmergentEditorialQuestionsOutput.model_validate(
+                        await self._agent_call(
+                            role="planner",
+                            key="emergent_questions",
+                            attempt=state.intelligence_recovery_round + 1,
+                            input_json={
+                                "topic": intelligence.topic,
+                                "content_objective": intelligence.content_objective,
+                                "sections": [
+                                    {
+                                        "section_id": item.section_id,
+                                        "editorial_goal": item.editorial_goal,
+                                        "existing_question_ids": item.question_ids,
+                                    }
+                                    for item in intelligence.sections
+                                ],
+                                "existing_questions": [
+                                    {
+                                        "question_id": item.question_id,
+                                        "section_id": item.section_id,
+                                        "question": item.question,
+                                    }
+                                    for item in intelligence.questions
+                                ],
+                                "evidence_claims": [
+                                    {
+                                        "knowledge_node_id": item.get("knowledge_node_id"),
+                                        "evidence_role": item.get("evidence_role"),
+                                        "claim_text": item.get("claim_text"),
+                                        "conditions": item.get("conditions", []),
+                                        "limitations": item.get("limitations", []),
+                                        "conclusion_status": item.get("conclusion_status"),
+                                        "conflict_group": item.get("conflict_group"),
+                                    }
+                                    for item in state.knowledge_claims[:160]
+                                ],
+                                "maximum_questions": remaining,
+                            },
+                            prompt=(
+                                "Analise somente as evidências já coletadas e proponha perguntas "
+                                "editoriais emergentes que ainda não estejam cobertas pelo plano. "
+                                "Priorize ambiguidades materiais, condições, limitações, conflitos "
+                                "entre fontes, objeções reais do leitor e conclusões que ficariam "
+                                "enganosas sem contexto. Use apenas section_id existente. Não "
+                                "responda às perguntas, não invente fatos, não altere o escopo e "
+                                "não repita perguntas existentes. Marque critical=true apenas se "
+                                "a omissão tornar a seção materialmente incompleta ou enganosa."
+                            ),
+                            output_schema=EmergentEditorialQuestionsOutput,
+                        )
+                    )
+                    proposed_count = len(proposal_output.questions)
+                    intelligence = self.intelligence.add_emergent_questions(
+                        intelligence,
+                        proposals=proposal_output.questions,
+                        claims=state.knowledge_claims,
+                        maximum_questions=remaining,
+                    )
+                except Exception as exc:  # best-effort semantic enrichment
+                    await self.runtime.event(
+                        self.project.id,
+                        self.pipeline_run.id,
+                        "v3.intelligence.emergent_questions_skipped",
+                        "evidence_graph_builder",
+                        {"error_type": type(exc).__name__},
+                        idempotency_key=(
+                            "v3.intelligence.emergent_questions_skipped:"
+                            f"{state.intelligence_recovery_round}"
+                        ),
+                        context=self._stage_context,
+                    )
+                else:
+                    accepted_count = sum(
+                        item.origin == "emergent" for item in intelligence.questions
+                    ) - existing_emergent
+                    await self.runtime.event(
+                        self.project.id,
+                        self.pipeline_run.id,
+                        "v3.intelligence.emergent_questions_evaluated",
+                        "evidence_graph_builder",
+                        {
+                            "proposed_count": proposed_count,
+                            "accepted_count": accepted_count,
+                            "maximum_questions": maximum,
+                        },
+                        idempotency_key=(
+                            "v3.intelligence.emergent_questions_evaluated:"
+                            f"{state.intelligence_recovery_round}:"
+                            f"{intelligence.checksum}"
+                        ),
+                        context=self._stage_context,
+                    )
         enriched = self.intelligence.attach_evidence(
             intelligence,
             claims=state.knowledge_claims,
@@ -2708,13 +2810,13 @@ class EditorialV3Executor:
             "meta_description": self._meta_description(draft),
             "slug": stable_slug(draft.title, separator="-", limit=120),
             "language": self.project.language,
-            "pipeline_contract_version": "editorial-v3.6.1",
+            "pipeline_contract_version": "editorial-v3.7",
             "editorial_architecture": ContentKnowledgeContract.model_validate(state.contract).content_type.value,
             "human_review_required": True,
         }
         source_report = {
             "generated_at": datetime.now(timezone.utc).isoformat(),
-            "pipeline_contract_version": "editorial-v3.6.1",
+            "pipeline_contract_version": "editorial-v3.7",
             "sources": sources,
             "source_document_count": len(sources),
             "distinct_source_count": len(
@@ -3798,6 +3900,8 @@ class EditorialV3Executor:
         skill_roles: list[str]
         if key.startswith("claim_extraction"):
             skill_roles = ["researcher"]
+        elif key == "emergent_questions":
+            skill_roles = ["planner"]
         elif key == "method_inventory" or key == "knowledge_synthesis":
             skill_roles = ["knowledge_synthesizer", "research_gatekeeper"]
         elif key.startswith("article"):
@@ -4885,7 +4989,7 @@ class EditorialV3Executor:
             self.pipeline_run.id,
             "stage.started",
             stage,
-            {"message": message, "pipeline_contract_version": "editorial-v3.6.1"},
+            {"message": message, "pipeline_contract_version": "editorial-v3.7"},
             idempotency_key=self._stage_context.event_key("stage.started"),
             context=self._stage_context,
         )
@@ -4900,7 +5004,7 @@ class EditorialV3Executor:
             result={
                 "blocking_reason": state.blocking_reason,
                 "blocking_code": state.blocking_code,
-                "pipeline_contract_version": "editorial-v3.6.1",
+                "pipeline_contract_version": "editorial-v3.7",
             },
             resumable=state.stage not in {V3Stage.blocked, V3Stage.completed},
             event_context=self._stage_context,

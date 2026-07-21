@@ -58,7 +58,7 @@ class FakeDatabase:
         *,
         postgres_error: bool = False,
         migration_error: bool = False,
-        versions=("0035",),
+        versions=("0036",),
         vector_active: bool = True,
     ):
         self.postgres_error = postgres_error

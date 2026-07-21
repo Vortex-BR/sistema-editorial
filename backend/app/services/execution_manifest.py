@@ -138,11 +138,36 @@ def v3_prompt_contract_manifest() -> dict[str, dict[str, str]]:
     return result
 
 
-_SENSITIVE_KEY = re.compile(
-    r"(?:^|_)(?:api_?key|authorization|credential|database_url|encrypted|"
-    r"password|redis_url|secret|token)(?:$|_)",
-    re.IGNORECASE,
+_SENSITIVE_KEY_EXACT = {
+    "api_key",
+    "apikey",
+    "authorization",
+    "credential",
+    "credential_value",
+    "database_url",
+    "encrypted",
+    "encrypted_value",
+    "password",
+    "redis_url",
+    "secret",
+    "secret_value",
+    "token",
+}
+_SENSITIVE_KEY_SUFFIXES = (
+    "_api_key",
+    "_access_token",
+    "_refresh_token",
+    "_auth_token",
+    "_password",
+    "_secret",
+    "_secret_value",
+    "_credential_value",
 )
+
+
+def _is_sensitive_manifest_key(value: object) -> bool:
+    key = re.sub(r"[^a-z0-9]+", "_", str(value).casefold()).strip("_")
+    return key in _SENSITIVE_KEY_EXACT or key.endswith(_SENSITIVE_KEY_SUFFIXES)
 _SENSITIVE_VALUE = re.compile(
     r"(?i)(?:bearer\s+[a-z0-9._~+/=-]{12,}|"
     r"\bsk-[a-z0-9_-]{16,}\b|\bAIza[a-zA-Z0-9_-]{20,}\b|"
@@ -653,6 +678,8 @@ class ExecutionManifestService:
                 "v3_min_claims_per_method": settings.v3_min_claims_per_method,
                 "v3_min_steps_per_method": settings.v3_min_steps_per_method,
                 "v3_writer_repair_attempts": settings.v3_writer_repair_attempts,
+                "v3_emergent_questions_enabled": settings.v3_emergent_questions_enabled,
+                "v3_max_emergent_questions": settings.v3_max_emergent_questions,
                 "v3_min_word_count": settings.v3_min_word_count,
                 "v3_max_word_count": settings.v3_max_word_count,
                 "superior_skills_mode": settings.superior_skills_mode,
@@ -866,9 +893,11 @@ def _checksum(value: Any) -> str:
 def _assert_secret_free(value: Any, path: str = "$") -> None:
     if isinstance(value, dict):
         for key, item in value.items():
-            if _SENSITIVE_KEY.search(str(key)):
+            if _is_sensitive_manifest_key(key):
+                location = f"{path}.{key}"
                 raise ExecutionManifestContainsSecret(
-                    f"Sensitive field is forbidden in execution manifest at {path}"
+                    f"Sensitive field is forbidden in execution manifest at {location}",
+                    dependencies=(f"manifest_path:{location}",),
                 )
             _assert_secret_free(item, f"{path}.{key}")
     elif isinstance(value, (list, tuple)):
@@ -876,5 +905,6 @@ def _assert_secret_free(value: Any, path: str = "$") -> None:
             _assert_secret_free(item, f"{path}[{index}]")
     elif isinstance(value, str) and _SENSITIVE_VALUE.search(value):
         raise ExecutionManifestContainsSecret(
-            f"Sensitive value is forbidden in execution manifest at {path}"
+            f"Sensitive value is forbidden in execution manifest at {path}",
+            dependencies=(f"manifest_path:{path}",),
         )

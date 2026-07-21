@@ -15,7 +15,7 @@ RUN groupadd --system --gid 10001 seo \
     && mkdir -p /var/lib/seo/tmp /var/lib/seo/celery \
     && chown -R 10001:10001 /var/lib/seo \
     && chmod 0750 /var/lib/seo /var/lib/seo/tmp /var/lib/seo/celery
-COPY requirements.txt .
+COPY requirements.txt requirements-dev.txt requirements-runtime.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 COPY --chown=root:seo . .
 RUN python -c "import json; from pathlib import Path; Path('/app/build-info.json').write_text(json.dumps({'commit_sha':'${APP_COMMIT_SHA}','build_version':'${APP_BUILD_VERSION}','source_digest':'${APP_SOURCE_DIGEST}'}, sort_keys=True), encoding='utf-8')" \

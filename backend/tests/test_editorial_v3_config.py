@@ -70,6 +70,19 @@ def test_brief_limits_match_the_v3_knowledge_contract(field, limit):
         ContentBriefWrite(**{field: "x" * (limit + 1)})
 
 
+
+def test_research_subject_accepts_detailed_factual_context_up_to_one_thousand_characters():
+    value = "contexto factual " * 55
+    brief = ContentBriefWrite(research_subject=value)
+
+    assert brief.research_subject == value
+
+
+def test_jurisdiction_is_not_part_of_the_active_brief_schema():
+    schema = ContentBriefWrite.model_json_schema()
+
+    assert "jurisdiction" not in schema["properties"]
+
 def test_project_topic_is_rejected_before_it_can_fail_inside_the_worker():
     with pytest.raises(ValidationError, match="at most 380 characters"):
         ProjectCreate(

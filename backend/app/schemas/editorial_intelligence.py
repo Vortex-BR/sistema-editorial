@@ -81,6 +81,22 @@ class EditorialQuestion(V3StrictModel):
     research_required: bool = True
     required_evidence_roles: list[EvidenceRole] = Field(default_factory=list, max_length=30)
     completion_signal: str = Field(default="", max_length=1500)
+    origin: Literal["contract", "emergent"] = "contract"
+    rationale: str = Field(default="", max_length=1500)
+
+
+class EmergentEditorialQuestionProposal(V3StrictModel):
+    section_id: str = Field(pattern=r"^[a-z][a-z0-9_]{2,99}$")
+    kind: EditorialQuestionKind = EditorialQuestionKind.knowledge
+    question: str = Field(min_length=8, max_length=1000)
+    rationale: str = Field(min_length=5, max_length=1500)
+    critical: bool = False
+    required_evidence_roles: list[EvidenceRole] = Field(default_factory=list, max_length=10)
+    completion_signal: str = Field(default="", max_length=1000)
+
+
+class EmergentEditorialQuestionsOutput(V3StrictModel):
+    questions: list[EmergentEditorialQuestionProposal] = Field(default_factory=list, max_length=20)
 
 
 class SectionIntelligencePlan(V3StrictModel):

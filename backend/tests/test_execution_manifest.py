@@ -261,6 +261,25 @@ async def test_manifest_rejects_secret_fields_even_with_a_valid_checksum():
         await ExecutionManifestService(ManifestDb(row)).required(row.pipeline_run_id)
 
 
+def test_manifest_allows_credential_policy_metadata_without_secret_values():
+    data = manifest_data()
+    data["search_route"]["credential_verification_required_before_activation"] = True
+    data["search_route"]["credential_reverification_during_run"] = False
+
+    manifest_module._assert_secret_free(data)
+
+
+def test_manifest_secret_error_reports_only_the_safe_path():
+    data = manifest_data()
+    data["editorial_context"]["api_key"] = "not-shown"
+
+    with pytest.raises(ExecutionManifestContainsSecret) as caught:
+        manifest_module._assert_secret_free(data)
+
+    assert caught.value.dependencies == ("manifest_path:$.editorial_context.api_key",)
+    assert "not-shown" not in str(caught.value)
+
+
 @pytest.mark.asyncio
 async def test_manifest_rejects_unknown_model_parameters_with_a_valid_checksum():
     data = manifest_data()

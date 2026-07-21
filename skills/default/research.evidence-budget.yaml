@@ -6,7 +6,7 @@ rules:
   - "Classificar perguntas como core, supporting ou optional e justificar a classificação"
   - "Exigir cobertura completa das perguntas core antes da redação"
   - "Usar perguntas supporting para aprofundar; lacunas optional não bloqueiam o artigo"
-  - "Priorizar fonte primária ou institucional para saúde, segurança, legalidade, números e causalidade"
+  - "Priorizar fonte primária ou institucional para saúde, segurança, números e causalidade"
   - "Encerrar a pesquisa quando houver fatos suficientes, diversidade de fontes e conflitos resolvidos"
   - "Não repetir busca paga sem mudar consulta, mercado, domínio ou objetivo de evidência"
 examples_good: ["Uma pergunta core recebe duas fontes independentes; uma pergunta optional pode ser omitida sem nova rodada."]

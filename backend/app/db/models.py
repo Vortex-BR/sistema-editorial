@@ -440,7 +440,6 @@ class ContentKnowledgeContractRecord(UUIDMixin, TimestampMixin, Base):
     reader_final_state: Mapped[str] = mapped_column(Text)
     article_promise: Mapped[str] = mapped_column(Text)
     scope_limit: Mapped[str] = mapped_column(Text)
-    jurisdiction: Mapped[str | None] = mapped_column(String(200))
     contract_json: Mapped[dict] = mapped_column(JSONB, default=dict)
     status: Mapped[str] = mapped_column(
         String(30), default="draft", server_default="draft", index=True

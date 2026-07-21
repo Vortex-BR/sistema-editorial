@@ -4,7 +4,6 @@ from app.schemas.editorial_v3 import EvidenceRole
 from app.services.search_policy import (
     MAX_DOCUMENTS_PER_QUESTION,
     MAX_EXTRACTION_CHARS_PER_DOCUMENT,
-    explicitly_requires_brazil,
     market_search_plan,
     merge_market_results,
     search_policy_manifest,
@@ -40,18 +39,17 @@ def test_v35_searches_local_market_first_and_never_excludes_it_by_default():
     assert all("-site:.br" not in search.query for search in searches)
 
 
-def test_jurisdiction_is_prioritized_without_discarding_project_locale():
+def test_market_selection_is_driven_by_project_locale_and_evidence_role():
     searches = market_search_plan(
-        topic="Requisitos de rotulagem",
-        question="Quais regras se aplicam?",
+        topic="Requisitos técnicos",
+        question="Quais critérios se aplicam?",
         fallback_query="consulta",
         localized_queries=LOCALIZED,
         project_locale="pt-BR",
-        jurisdiction="Espanha",
         evidence_role=EvidenceRole.risk,
     )
 
-    assert [search.market.code for search in searches] == ["es", "br", "us"]
+    assert [search.market.code for search in searches] == ["br", "us", "es"]
 
 
 def test_domain_exclusion_is_an_explicit_policy_not_a_global_default():
@@ -68,21 +66,6 @@ def test_domain_exclusion_is_an_explicit_policy_not_a_global_default():
     assert not searches[0].exclude_brazil
     assert all(search.exclude_brazil for search in searches[1:])
     assert all("-site:.br" in search.query for search in searches[1:])
-
-
-def test_explicit_brazil_helper_remains_available_for_legacy_callers():
-    assert not explicitly_requires_brazil(
-        topic="Guia de germinação",
-        question="Qual temperatura é adequada?",
-    )
-    assert explicitly_requires_brazil(
-        topic="Guia de germinação",
-        question="Quais regras se aplicam no Brasil?",
-    )
-    assert explicitly_requires_brazil(
-        topic="Brazilian hemp regulation",
-        question="Which rules apply?",
-    )
 
 
 def test_source_country_is_inferred_only_from_safe_domain_evidence():
@@ -150,14 +133,14 @@ def test_manifest_pins_intent_aware_policy_and_prompt_limits():
     )
 
 
-def test_market_plan_infers_explicit_jurisdiction_from_topic_when_field_is_empty():
+def test_topic_text_does_not_override_the_project_locale_market_order():
     searches = market_search_plan(
-        topic="legislação de sementes na Espanha",
-        question="quais normas se aplicam?",
-        fallback_query="legislação sementes",
+        topic="requisitos técnicos usados na Espanha",
+        question="quais critérios se aplicam?",
+        fallback_query="requisitos técnicos",
         project_locale="pt-BR",
         evidence_role="risk",
     )
 
-    assert searches[0].market.code == "es"
-    assert {item.market.code for item in searches} >= {"es", "br"}
+    assert searches[0].market.code == "br"
+    assert {item.market.code for item in searches} >= {"br", "us"}

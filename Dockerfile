@@ -11,10 +11,8 @@ RUN npm run build
 FROM python:3.12-slim AS backend-dependencies
 
 WORKDIR /build
-COPY backend/requirements.txt ./requirements.txt
-RUN sed -E '/^(pytest|pytest-asyncio|ruff)==/d' requirements.txt \
-        > requirements-runtime.txt \
-    && python -m pip install --no-cache-dir \
+COPY backend/requirements-runtime.txt ./requirements-runtime.txt
+RUN python -m pip install --no-cache-dir \
         --prefix=/install -r requirements-runtime.txt
 
 FROM python:3.12-slim

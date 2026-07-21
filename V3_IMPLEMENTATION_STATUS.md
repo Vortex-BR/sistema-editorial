@@ -2,11 +2,17 @@
 
 Data: 20/07/2026
 
+## Atualização V3.6.3 — Briefing Simplification & Manifest Safety Fix
+
+A V3.6.3 remove a camada editorial de jurisdição/conformidade do formulário, do payload, do contrato de conhecimento, da intenção de pesquisa e da seleção de mercados. A seleção passa a depender somente do idioma/locale do projeto e do papel de evidência. O campo legado do banco é removido pela migration `0036`, enquanto payloads antigos são normalizados para permitir retomada segura.
+
+O limite do assunto factual passa de 240 para 1.000 caracteres e a campanha MSB é testada contra os limites do formulário. O scanner do manifesto deixa de confundir metadados como `credential_verification_required_before_activation` com segredos reais. Segredos continuam bloqueados, mas o diagnóstico retorna somente o caminho seguro do campo, nunca o valor.
+
 ## Atualização V3.6.2 — Execution Reliability & Campaign Presets
 
 A V3.6.2 fecha o fluxo operacional entre criação do projeto, criação do run, fixação do manifesto e publicação no broker. Com início automático marcado, a transação só é confirmada quando projeto, evento, run e manifesto existem; falhas anteriores a esse ponto fazem rollback. Indisponibilidade transitória do broker não apaga o run: o dispatch fica registrado para retry.
 
-A prontidão e o manifesto agora usam papéis específicos por versão, impedindo dependências exclusivas da V3 de bloquearem a V2. A interface possui preflight com reparação segura, exibe dependências acionáveis, recupera projetos legados sem run e inclui a campanha `MSB — Germinação no papel-toalha`. Não há migration nova; o head permanece `0035` e o contrato editorial continua V3.6.1.
+A prontidão e o manifesto agora usam papéis específicos por versão, impedindo dependências exclusivas da V3 de bloquearem a V2. A interface possui preflight com reparação segura, exibe dependências acionáveis, recupera projetos legados sem run e inclui a campanha `MSB — Germinação no papel-toalha`. A migration `0036` remove o campo legado de jurisdição; o head atual é `0036` e o contrato editorial continua V3.6.1.
 
 ## Atualização V3.6.1 — Editorial Intelligence Flow Integrity
 
@@ -26,7 +32,7 @@ A V3.5.1 corrige o transporte de contexto, o fact-check, as revisões, o briefin
 
 A descoberta de fontes agora é orientada por intenção factual, locale, jurisdição e papel de evidência. Consultas são localizadas por mercado; requests, retries, fetches, créditos e timeout possuem orçamento independente; provedores têm circuit breaker; a leitura valida redirects e limita bytes; e o novo gate de cobertura pode executar recuperação direcionada antes do bloqueio. A redação continua proibida sem evidência suficiente.
 
-A V3.5 não cria migration. Runs anteriores preservam seus manifestos e devem ser substituídos por uma nova execução para usar a política `intent-aware-search.v3.5`.
+A V3.5 não cria migration. Runs anteriores preservam seus manifestos e devem ser substituídos por uma nova execução para usar a política `intent-aware-search.v3.5`. A V3.6.3 removeu a antiga priorização por jurisdição e mantém a ordem por locale e função de evidência.
 
 
 ## Estado desta versão
@@ -35,7 +41,7 @@ A V3 está implementada como pipeline executável e opt-in. A V2 permanece
 preservada para rollback e para projetos que não selecionarem
 `editorial_pipeline_version=v3`.
 
-A execução V3 só começa quando as duas flags estão ativas e a migration head `0035`
+A execução V3 só começa quando as duas flags estão ativas e a migration head `0036`
 foi aplicada:
 
 ```env

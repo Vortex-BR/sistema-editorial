@@ -14,7 +14,7 @@ const FIELD_LABELS:Record<string,string>={
   reader_final_state:'Estado final observável',
   reader_goal:'O que o leitor busca',
   reader_start_state:'Estado inicial do leitor',
-  scope_limit:'Limite do escopo',
+  scope_limit:'Ponto de encerramento do conteúdo',
   topic:'Tópico principal',
 }
 

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import re
-import unicodedata
 from dataclasses import dataclass
 from typing import Iterable, Mapping, TypeVar
 from urllib.parse import urlsplit
@@ -63,16 +61,6 @@ INTERNATIONAL_SEARCH_MARKETS = (UNITED_STATES, SPAIN, SWITZERLAND)
 _MARKET_BY_CODE = {market.code: market for market in ALL_SEARCH_MARKETS}
 _LOCALE_MARKET = {"pt": BRAZIL, "en": UNITED_STATES, "es": SPAIN, "de": SWITZERLAND}
 
-_BRAZIL_CONTEXT = re.compile(
-    r"\b(?:brasil|brasileir[oa]s?|brazil|brazilian)\b",
-    re.IGNORECASE,
-)
-_JURISDICTION_MARKERS: tuple[tuple[re.Pattern[str], SearchMarket], ...] = (
-    (re.compile(r"\b(?:brasil|brazil|brasileir[oa]s?)\b", re.I), BRAZIL),
-    (re.compile(r"\b(?:estados unidos|united states|eua|usa)\b", re.I), UNITED_STATES),
-    (re.compile(r"\b(?:espanha|spain|españa)\b", re.I), SPAIN),
-    (re.compile(r"\b(?:su[ií]ça|switzerland|schweiz|suisse)\b", re.I), SWITZERLAND),
-)
 _GLOBAL_EVIDENCE_ROLES = {
     "definition",
     "mechanism",
@@ -90,41 +78,21 @@ _SCIENTIFIC_SOURCE_ROLES = {
 _T = TypeVar("_T")
 
 
-def _normalized(value: object) -> str:
-    text = unicodedata.normalize("NFKD", str(value or ""))
-    return "".join(character for character in text if not unicodedata.combining(character))
-
-
 def _locale_language(project_locale: str | None) -> str:
     normalized = str(project_locale or "pt-BR").strip().replace("_", "-").casefold()
     return normalized.split("-", 1)[0] or "pt"
 
 
-def explicitly_requires_brazil(*, topic: str, question: str) -> bool:
-    """Backward-compatible helper; V3.5 no longer excludes Brazil by default."""
-
-    return bool(_BRAZIL_CONTEXT.search(_normalized(f"{topic} {question}")))
-
-
-def _jurisdiction_market(jurisdiction: str | None) -> SearchMarket | None:
-    normalized = _normalized(jurisdiction)
-    for pattern, market in _JURISDICTION_MARKERS:
-        if pattern.search(normalized):
-            return market
-    return None
-
-
 def select_search_markets(
     *,
     project_locale: str = "pt-BR",
-    jurisdiction: str | None = None,
     evidence_role: object | None = None,
     required_source_roles: Iterable[object] = (),
     maximum_markets: int = 3,
 ) -> tuple[SearchMarket, ...]:
     """Choose markets from intent instead of applying a fixed international list.
 
-    Local/jurisdictional evidence is searched first.  US/English is added for
+    Local evidence is searched first. US/English is added for
     scientific, mechanism, risk and comparative evidence because those tasks
     frequently benefit from global databases.  The result is deterministic and
     bounded so one logical query cannot fan out without limit.
@@ -133,7 +101,6 @@ def select_search_markets(
     maximum_markets = max(1, min(4, int(maximum_markets)))
     language = _locale_language(project_locale)
     local = _LOCALE_MARKET.get(language, BRAZIL)
-    jurisdiction_market = _jurisdiction_market(jurisdiction)
     role = str(getattr(evidence_role, "value", evidence_role) or "").casefold()
     source_roles = {
         str(getattr(item, "value", item) or "").casefold()
@@ -146,7 +113,6 @@ def select_search_markets(
         if market is not None and market not in ordered:
             ordered.append(market)
 
-    add(jurisdiction_market)
     add(local)
     if (
         not role
@@ -172,7 +138,6 @@ def market_search_plan(
     fallback_query: str,
     localized_queries: Mapping[str, object] | None = None,
     project_locale: str = "pt-BR",
-    jurisdiction: str | None = None,
     evidence_role: object | None = None,
     required_source_roles: Iterable[object] = (),
     maximum_markets: int = 3,
@@ -186,10 +151,8 @@ def market_search_plan(
     """
 
     localized_queries = localized_queries or {}
-    effective_jurisdiction = jurisdiction or f"{topic} {question}"
     markets = select_search_markets(
         project_locale=project_locale,
-        jurisdiction=effective_jurisdiction,
         evidence_role=evidence_role,
         required_source_roles=required_source_roles,
         maximum_markets=maximum_markets,
@@ -264,7 +227,7 @@ def merge_market_results(
 def search_policy_manifest() -> dict[str, object]:
     return {
         "policy_version": "intent-aware-search.v3.5",
-        "market_selection": "project_locale_then_jurisdiction_then_evidence_role",
+        "market_selection": "project_locale_then_evidence_role",
         "available_markets": [market.code for market in ALL_SEARCH_MARKETS],
         "local_market_is_searched_first": True,
         "brazil_market_requires_explicit_context": False,

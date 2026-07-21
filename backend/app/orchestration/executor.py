@@ -1945,7 +1945,7 @@ sistema, deve declarar node_ids com um ou mais IDs válidos. covered_node_ids de
 listar todos os nós efetivamente desenvolvidos. Nós core recebem mais profundidade
 que nós peripheral; o fechamento só aparece depois de todos os nós required. Um
 subtema fora do contrato não ganha seção própria: pode ser mencionado brevemente
-ou registrado como candidato a conteúdo interno, salvo quando segurança, conformidade
+ou registrado como candidato a conteúdo interno, salvo quando precisão factual
 ou risco exigirem desenvolvimento explícito. Cada parágrafo deve retomar o contexto
 necessário, desenvolver uma ideia e preparar a seguinte. Sintetize fatos relacionados
 em explicações; não os apresente como verbetes independentes ou respostas coladas.

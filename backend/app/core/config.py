@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://seo:change-me@localhost:5432/seo_ledger"
     redis_url: str = "redis://localhost:6379/0"
     credential_master_key: str = ""
+    # Comma/newline separated keyring. The first key encrypts; every key may decrypt.
+    # Keep CREDENTIAL_MASTER_KEY for backwards-compatible single-key deployments.
+    credential_master_keys: str = ""
     frontend_origin: str = "http://localhost:3000"
     # A second cycle may only vary extraction while still seeing the same search
     # results. Three cycles give an uncovered question one genuinely fresh,
@@ -54,6 +57,8 @@ class Settings(BaseSettings):
     v3_min_claims_per_method: int = Field(default=3, ge=1, le=12)
     v3_min_steps_per_method: int = Field(default=3, ge=1, le=12)
     v3_writer_repair_attempts: int = Field(default=1, ge=0, le=2)
+    v3_emergent_questions_enabled: bool = True
+    v3_max_emergent_questions: int = Field(default=6, ge=0, le=20)
     v3_min_word_count: int = Field(default=1800, ge=800, le=6000)
     v3_max_word_count: int = Field(default=3500, ge=1200, le=10000)
     admin_api_token: str = ""
@@ -127,6 +132,29 @@ class Settings(BaseSettings):
                 "OPERATIONAL_HEARTBEAT_TTL_SECONDS"
             )
         return self
+
+    @property
+    def credential_keyring(self) -> tuple[str, ...]:
+        """Return the ordered Fernet keyring without duplicating keys.
+
+        CREDENTIAL_MASTER_KEYS takes precedence and may contain comma or newline
+        separated values. CREDENTIAL_MASTER_KEY remains a safe compatibility
+        fallback for existing deployments.
+        """
+        raw_values: list[str] = []
+        if self.credential_master_keys.strip():
+            normalized = self.credential_master_keys.replace("\r", "\n").replace(",", "\n")
+            raw_values.extend(normalized.splitlines())
+        if self.credential_master_key.strip():
+            raw_values.append(self.credential_master_key)
+        result: list[str] = []
+        seen: set[str] = set()
+        for raw in raw_values:
+            value = raw.strip()
+            if value and value not in seen:
+                seen.add(value)
+                result.append(value)
+        return tuple(result)
 
     @property
     def is_production(self) -> bool:

@@ -120,7 +120,6 @@ def _legacy_intent(search_subject: str, project_locale: str = "pt-BR") -> Canoni
         project_locale=project_locale,
         project_language=language,
         target_country=country,
-        jurisdiction=None,
         content_type=EditorialContentTypeV3.explanatory_guide.value,
         entity_terms=tuple(),
         method_labels=tuple(),
@@ -148,13 +147,7 @@ def _authoritative_source_required(
         EvidenceRole.limitation,
     }:
         return True
-    return bool(
-        re.search(
-            r"\b(?:legal|legisla|regula|jurisdi|governo|norma)\w*",
-            research_goal,
-            re.IGNORECASE,
-        )
-    )
+    return False
 
 
 class ResilientSearchCoordinator:
@@ -234,7 +227,6 @@ class ResilientSearchCoordinator:
                 question=question,
                 fallback_query=variants[0],
                 project_locale=intent.project_locale,
-                jurisdiction=intent.jurisdiction,
                 evidence_role=evidence_role,
                 required_source_roles=required_source_roles,
                 maximum_markets=3,

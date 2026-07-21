@@ -23,108 +23,56 @@ def named_step(job: dict, name: str) -> dict:
     return next(step for step in job["steps"] if step.get("name") == name)
 
 
-def test_docker_build_uses_the_explicit_candidate_sha():
+def test_production_image_uses_one_candidate_for_build_smoke_scan_and_publish():
     workflow = load_workflow()
     workflow_env = workflow["env"]
 
     assert workflow_env["CANDIDATE_SHA"] == CANDIDATE_EXPRESSION
     assert workflow_env["CI_MERGE_SHA"] == "${{ github.sha }}"
-    assert workflow_env["IMAGE_SOURCE"] == (
-        "${{ github.server_url }}/${{ github.repository }}"
-    )
+    assert workflow_env["PGVECTOR_IMAGE"] == "pgvector/pgvector:0.8.5-pg17"
 
-    job = workflow["jobs"]["docker-build"]
+    job = workflow["jobs"]["production-image"]
     checkout = action_step(job, "actions/checkout@v4")
-    verification = named_step(job, "Verify candidate checkout")
+    metadata = named_step(job, "Resolve immutable candidate metadata")
+    build = action_step(job, "docker/build-push-action@v6")
+    trivy = action_step(job, "aquasecurity/trivy-action@0.28.0")
+    smoke = named_step(job, "Run production image smoke test")
+    cleanup = named_step(job, "Remove scoped smoke containers but preserve the tested image")
+    publish = named_step(job, "Publish the exact tested image without rebuilding")
 
     assert checkout["with"]["ref"] == "${{ env.CANDIDATE_SHA }}"
-    assert "git rev-parse HEAD" in verification["run"]
-    assert '"${checkout_sha}" = "${CANDIDATE_SHA}"' in verification["run"]
-    assert "CI_MERGE_SHA:" in verification["run"]
-
-
-def test_image_smoke_resolves_metadata_without_recursive_job_env():
-    workflow = load_workflow()
-    job = workflow["jobs"]["image-smoke"]
-    checkout = action_step(job, "actions/checkout@v4")
-    metadata = named_step(job, "Resolve image metadata")
-    verification = named_step(job, "Verify candidate checkout")
-    build = action_step(job, "docker/build-push-action@v6")
-    smoke = named_step(job, "Run the production image smoke test")
-    diagnostics = named_step(job, "Show production smoke diagnostics")
-    cleanup = named_step(job, "Remove only image-smoke resources")
-
-    assert job["needs"] == "docker-build"
-    assert job["runs-on"] == "ubuntu-latest"
-    assert all("${{ env." not in str(value) for value in job["env"].values())
-    assert "IMAGE_TAG" not in job["env"]
-    assert "EXPECTED_APP_COMMIT_SHA" not in job["env"]
-    assert "EXPECTED_IMAGE_SOURCE" not in job["env"]
-
-    assert checkout["with"]["ref"] == CANDIDATE_EXPRESSION
-    assert metadata["id"] == "image_metadata"
-    assert metadata["env"]["PR_HEAD_SHA"] == "${{ github.event.pull_request.head.sha }}"
-    assert metadata["env"]["EVENT_SHA"] == "${{ github.sha }}"
-    for output in (
-        "candidate_sha",
-        "short_sha",
-        "ci_merge_sha",
-        "image_source",
-        "build_version",
-        "image_tag",
-    ):
-        assert f'echo "{output}=' in metadata["run"]
-
-    assert verification["env"]["CANDIDATE_SHA"] == (
-        "${{ steps.image_metadata.outputs.candidate_sha }}"
-    )
-    assert verification["env"]["CI_MERGE_SHA"] == (
-        "${{ steps.image_metadata.outputs.ci_merge_sha }}"
-    )
-    assert "git rev-parse HEAD" in verification["run"]
-    assert '"${checkout_sha}" != "${CANDIDATE_SHA}"' in verification["run"]
-
+    assert "git rev-parse HEAD" in metadata["run"]
+    assert "resolve_alembic_head.py" in metadata["run"]
     assert build["with"]["load"] is True
     assert build["with"]["push"] is False
-    assert build["with"]["tags"] == "${{ steps.image_metadata.outputs.image_tag }}"
-    assert "APP_COMMIT_SHA=${{ steps.image_metadata.outputs.candidate_sha }}" in (
-        build["with"]["build-args"]
+    assert build["with"]["tags"] == "${{ steps.metadata.outputs.image_tag }}"
+    assert trivy["with"]["image-ref"] == "${{ steps.metadata.outputs.image_tag }}"
+    assert smoke["env"]["IMAGE_TAG"] == "${{ steps.metadata.outputs.image_tag }}"
+    assert smoke["env"]["EXPECTED_ALEMBIC_HEAD"] == (
+        "${{ steps.metadata.outputs.alembic_head }}"
     )
-    assert "APP_BUILD_VERSION=${{ steps.image_metadata.outputs.build_version }}" in (
-        build["with"]["build-args"]
-    )
-    assert "APP_IMAGE_SOURCE=${{ steps.image_metadata.outputs.image_source }}" in (
-        build["with"]["build-args"]
-    )
-    assert (
-        "org.opencontainers.image.revision="
-        "${{ steps.image_metadata.outputs.candidate_sha }}"
-    ) in build["with"]["labels"]
-    assert (
-        "org.opencontainers.image.version="
-        "${{ steps.image_metadata.outputs.build_version }}"
-    ) in build["with"]["labels"]
-    assert (
-        "org.opencontainers.image.source="
-        "${{ steps.image_metadata.outputs.image_source }}"
-    ) in build["with"]["labels"]
-
-    for step in (smoke, diagnostics, cleanup):
-        assert step["env"]["IMAGE_TAG"] == (
-            "${{ steps.image_metadata.outputs.image_tag }}"
-        )
-        assert step["env"]["CANDIDATE_SHA"] == (
-            "${{ steps.image_metadata.outputs.candidate_sha }}"
-        )
-        assert step["env"]["CI_MERGE_SHA"] == (
-            "${{ steps.image_metadata.outputs.ci_merge_sha }}"
-        )
-
-    assert diagnostics["if"] == "failure()"
-    assert diagnostics["run"] == "bash scripts/ci/image-smoke.sh diagnostics"
     assert cleanup["if"] == "always()"
-    assert cleanup["run"] == "bash scripts/ci/image-smoke.sh cleanup"
-    assert all("continue-on-error" not in step for step in job["steps"])
+    assert job["env"]["PRESERVE_IMAGE"] == "1"
+    assert 'docker tag "${IMAGE_TAG}" "${target}"' in publish["run"]
+    assert 'push_output="$(docker push "${target}")"' in publish["run"]
+    assert "digest: (sha256:[0-9a-f]{64})" in publish["run"]
+    assert "docker image inspect --format '{{index .RepoDigests 0}}'" not in publish["run"]
+    assert publish["if"] == (
+        "github.event_name == 'push' && github.ref == 'refs/heads/main'"
+    )
+    assert sum(
+        step.get("uses") == "docker/build-push-action@v6" for step in job["steps"]
+    ) == 1
+
+
+def test_ci_derives_alembic_head_instead_of_hardcoding_an_old_revision():
+    workflow = read(".github/workflows/docker-build.yml")
+    resolver = read("scripts/ci/resolve_alembic_head.py")
+
+    assert 'EXPECTED_ALEMBIC_HEAD: "0032"' not in workflow
+    assert "resolve_alembic_head.py" in workflow
+    assert "expected exactly one Alembic head" in resolver
+    assert "ast.parse" in resolver
 
 
 def test_production_dockerfile_uses_runtime_allowlist_and_oci_labels():
@@ -138,9 +86,8 @@ def test_production_dockerfile_uses_runtime_allowlist_and_oci_labels():
     assert "FROM python:3.12-slim AS backend-dependencies" in normalized
     assert "--prefix=/install -r requirements-runtime.txt" in normalized
     assert "COPY --from=backend-dependencies /install/ /usr/local/" in normalized
-    assert "COPY backend/requirements.txt ./requirements.txt" not in normalized.split(
-        "FROM python:3.12-slim\n", maxsplit=1
-    )[1]
+    assert "COPY backend/requirements-runtime.txt ./requirements-runtime.txt" in normalized
+    assert "sed -E" not in normalized
     assert "org.opencontainers.image.revision=${APP_COMMIT_SHA}" in normalized
     assert "org.opencontainers.image.version=${APP_BUILD_VERSION}" in normalized
     assert "org.opencontainers.image.source=${APP_IMAGE_SOURCE}" in normalized
@@ -254,13 +201,14 @@ def test_image_smoke_covers_provenance_runtime_security_and_scoped_cleanup():
         "docker volume " + "prune",
         "docker network " + "prune",
         "docker builder " + "prune",
-        "docker login",
-        "docker push",
     )
     for operation in forbidden_operations:
         assert operation not in workflow
         assert operation not in script
 
+    assert workflow.count("docker/build-push-action@v6") == 1
+    assert "Publish the exact tested image without rebuilding" in workflow
+    assert 'PRESERVE_IMAGE: "1"' in workflow
     assert 'docker container rm --force "${container}"' in script
     assert 'docker network rm "${NETWORK_NAME}"' in script
     assert 'docker image rm "${IMAGE_TAG}"' in script

@@ -103,7 +103,6 @@ class KnowledgeContractRepository:
             reader_final_state=contract.reader_final_state,
             article_promise=contract.article_promise,
             scope_limit=contract.scope_limit,
-            jurisdiction=contract.jurisdiction,
             contract_json=contract.model_dump(mode="json"),
             status="validated",
             checksum=checksum,

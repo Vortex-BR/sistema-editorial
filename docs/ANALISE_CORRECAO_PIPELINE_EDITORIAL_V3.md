@@ -383,7 +383,7 @@ Criar vocabulário por `content_type`:
 
 ## P1.2 — `search_subject` é uma concatenação com ponto e vírgula
 
-O assunto automático começa pela palavra-chave SEO e concatena tópico, segmento e termos relacionados até 240 caracteres.
+O assunto factual aceita até 1.000 caracteres no briefing e é normalizado para até 500 caracteres durante o planejamento da pesquisa.
 
 ### Impacto
 
@@ -400,7 +400,6 @@ ResearchIntent(
     method="papel-toalha em recipiente fechado",
     variables=["umidade", "temperatura", "ventilação"],
     desired_evidence=["mecanismo", "procedimento", "sinais", "falhas"],
-    jurisdiction=None,
 )
 ```
 

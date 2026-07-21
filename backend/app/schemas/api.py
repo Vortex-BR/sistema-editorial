@@ -62,7 +62,7 @@ class PublicationProfileRead(PublicationProfileWrite):
 class ContentBriefWrite(BaseModel):
     content_objective: str = Field(default="", max_length=3000)
     primary_keyword: str = Field(default="", max_length=200)
-    research_subject: str = Field(default="", max_length=240)
+    research_subject: str = Field(default="", max_length=1000)
     secondary_keywords: list[str] = Field(default_factory=list, max_length=30)
     segment: str = Field(default="", max_length=200)
     reader_context: str = Field(default="", max_length=5000)
@@ -120,7 +120,6 @@ class ContentBriefWrite(BaseModel):
     reader_final_state: str = Field(default="", max_length=1000)
     article_promise: str = Field(default="", max_length=3000)
     scope_limit: str = Field(default="", max_length=2000)
-    jurisdiction: str = Field(default="", max_length=200)
     requires_method_comparison: bool = False
     requires_external_reference_per_method: bool = False
 
@@ -319,6 +318,21 @@ class CredentialVerificationRead(BaseModel):
     latency_ms: int
     model: str | None = None
     error_code: str | None = None
+
+
+class CredentialRotationRequest(BaseModel):
+    dry_run: bool = True
+    confirmation: str | None = Field(default=None, max_length=32)
+
+
+class CredentialRotationRead(BaseModel):
+    key_count: int = Field(ge=1)
+    total_credentials: int = Field(ge=0)
+    already_primary: int = Field(ge=0)
+    pending_rotation: int = Field(ge=0)
+    rotated: int = Field(ge=0)
+    dry_run: bool
+    providers: list[str] = Field(default_factory=list, max_length=20)
 
 
 class PipelineCheckpointRead(BaseModel):

@@ -73,7 +73,6 @@ class KnowledgeNodeKind(str, Enum):
     final_outcome_confirmation = "final_outcome_confirmation"
     troubleshooting = "troubleshooting"
     external_references = "external_references"
-    compliance_boundary = "compliance_boundary"
     explanation = "explanation"
 
 
@@ -385,6 +384,24 @@ class KnowledgeEdgeContract(V3StrictModel):
 
 
 class ContentKnowledgeContract(V3StrictModel):
+    @model_validator(mode="before")
+    @classmethod
+    def discard_legacy_jurisdiction(cls, value):
+        if not isinstance(value, dict):
+            return value
+        normalized = dict(value)
+        normalized.pop("jurisdiction", None)
+        metadata = normalized.get("metadata")
+        if isinstance(metadata, dict):
+            metadata = dict(metadata)
+            research_intent = metadata.get("research_intent")
+            if isinstance(research_intent, dict):
+                research_intent = dict(research_intent)
+                research_intent.pop("jurisdiction", None)
+                metadata["research_intent"] = research_intent
+            normalized["metadata"] = metadata
+        return normalized
+
     contract_version: Literal["editorial-v3"] = "editorial-v3"
     content_type: EditorialContentTypeV3
     topic: str = Field(min_length=3, max_length=500)
@@ -392,7 +409,6 @@ class ContentKnowledgeContract(V3StrictModel):
     reader_final_state: str = Field(min_length=10, max_length=2000)
     article_promise: str = Field(min_length=20, max_length=3000)
     scope_limit: str = Field(min_length=10, max_length=2000)
-    jurisdiction: str | None = Field(default=None, max_length=200)
     requires_method_comparison: bool = False
     requires_external_reference_per_method: bool = False
     approach_dimension: ApproachDimension | None = None

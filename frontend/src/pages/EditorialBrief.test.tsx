@@ -138,7 +138,7 @@ describe('editorial profiles and brief',()=>{
     fireEvent.change(screen.getByLabelText('Estado inicial do leitor'),{target:{value:'Leitor que precisa compreender o óleo antes de escolher a abordagem'}})
     fireEvent.change(screen.getByLabelText('Estado final observável'),{target:{value:'Leitor capaz de confirmar nível correto e ausência de vazamentos'}})
     fireEvent.change(screen.getByLabelText('Promessa editorial'),{target:{value:'Explicar a base, comparar os métodos, orientar a escolha e acompanhar até o resultado'}})
-    fireEvent.change(screen.getByLabelText('Limite do escopo'),{target:{value:'Terminar na verificação do nível e não avançar para outros serviços'}})
+    fireEvent.change(screen.getByLabelText('Ponto de encerramento do conteúdo'),{target:{value:'Terminar na verificação do nível e não avançar para outros serviços'}})
 
     expect((screen.getByLabelText(/Iniciar Editorial V3 após criar/) as HTMLInputElement).checked).toBe(true)
     await userEvent.click(screen.getByRole('button',{name:/Criar e iniciar V3/}))
@@ -169,6 +169,8 @@ describe('editorial profiles and brief',()=>{
     expect((screen.getByLabelText('Perfil editorial') as HTMLSelectElement).value).toBe('profile-msb')
     expect((screen.getByLabelText('Nome do projeto') as HTMLInputElement).value).toContain('germinação de sementes de cannabis')
     expect((screen.getByLabelText('Palavra-chave principal') as HTMLInputElement).value).toBe('como germinar semente de cannabis no papel-toalha')
+    expect((screen.getByLabelText(/Assunto factual da pesquisa/) as HTMLInputElement).maxLength).toBe(1000)
+    expect(screen.queryByLabelText(/Jurisdição e conformidade/)).toBeNull()
     expect((screen.getByLabelText(/Contexto adicional/) as HTMLTextAreaElement).value).toContain('20. Quais são os erros que mais causam perda de sementes?')
     expect((screen.getByLabelText(/Iniciar Editorial V3 após criar/) as HTMLInputElement).checked).toBe(true)
   })

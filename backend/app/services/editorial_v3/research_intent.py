@@ -316,7 +316,6 @@ class CanonicalResearchIntent:
     project_locale: str
     project_language: str
     target_country: str
-    jurisdiction: str | None
     content_type: str
     entity_terms: tuple[str, ...]
     method_labels: tuple[str, ...]
@@ -341,7 +340,6 @@ class CanonicalResearchIntent:
                 project_locale=locale,
                 project_language=locale_language(locale),
                 target_country=str(payload.get("target_country") or locale_country(locale)),
-                jurisdiction=str(payload.get("jurisdiction") or "").strip() or contract.jurisdiction,
                 content_type=str(payload.get("content_type") or contract.content_type.value),
                 entity_terms=tuple(str(item) for item in payload.get("entity_terms") or meaningful_terms(subject, language=locale_language(locale))),
                 method_labels=tuple(str(item) for item in payload.get("method_labels") or contract.required_method_labels),
@@ -356,7 +354,6 @@ class CanonicalResearchIntent:
             project_locale=locale,
             project_language=locale_language(locale),
             target_country=locale_country(locale),
-            jurisdiction=contract.jurisdiction,
             content_type=contract.content_type.value,
             entity_terms=meaningful_terms(subject, language=locale_language(locale)),
             method_labels=tuple(contract.required_method_labels),
@@ -367,7 +364,6 @@ def build_research_intent_payload(
     *,
     canonical_subject: str,
     project_locale: str,
-    jurisdiction: str | None,
     content_type: EditorialContentTypeV3,
     method_labels: Iterable[str] = (),
 ) -> dict[str, Any]:
@@ -380,7 +376,6 @@ def build_research_intent_payload(
         project_locale=locale,
         project_language=language,
         target_country=locale_country(locale),
-        jurisdiction=str(jurisdiction or "").strip() or None,
         content_type=content_type.value,
         entity_terms=meaningful_terms(subject, language=language),
         method_labels=tuple(" ".join(str(item).split())[:200] for item in method_labels if str(item).strip()),

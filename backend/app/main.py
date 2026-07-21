@@ -46,8 +46,16 @@ def create_app(config: Settings) -> FastAPI:
         CORSMiddleware,
         allow_origins=[config.frontend_origin],
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=["GET", "POST", "PUT", "DELETE"],
+        allow_headers=[
+            "Accept",
+            "Authorization",
+            "Content-Type",
+            "Idempotency-Key",
+            "X-Admin-Token",
+            "X-Requested-With",
+        ],
+        expose_headers=["Content-Disposition", "ETag", "Retry-After", "X-Request-ID"],
     )
     application.include_router(router)
     return application

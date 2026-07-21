@@ -43,8 +43,19 @@ def contract_input():
         scope_limit=(
             "O guia termina na emergência da plântula e não cobre o cultivo posterior."
         ),
-        jurisdiction="Brasil; validar legislação e restrições aplicáveis",
     )
+
+
+def test_legacy_contract_payload_discards_jurisdiction_without_exposing_it():
+    contract = KnowledgeContractBuilder().build(contract_input())
+    payload = contract.model_dump(mode="json")
+    payload["jurisdiction"] = "legacy value"
+    payload["metadata"]["research_intent"]["jurisdiction"] = "legacy value"
+
+    restored = ContentKnowledgeContract.model_validate(payload)
+
+    assert "jurisdiction" not in restored.model_dump(mode="json")
+    assert "jurisdiction" not in restored.metadata["research_intent"]
 
 
 def test_builder_creates_required_procedural_order_before_research():
@@ -90,7 +101,6 @@ def test_contract_from_project_uses_rich_v3_brief():
             "reader_final_state": "Leitor capaz de reconhecer o resultado final observado.",
             "article_promise": "Ensinar as alternativas, a escolha e o processo completo até o resultado.",
             "scope_limit": "Encerrar exatamente no resultado final definido pelo briefing.",
-            "jurisdiction": "Mercado informado pelo projeto",
             "editorial_content_type": "procedural_decision_guide",
             "requires_method_comparison": True,
             "requires_external_reference_per_method": True,
@@ -102,7 +112,7 @@ def test_contract_from_project_uses_rich_v3_brief():
 
     assert result.reader_start_state.startswith("Leitor no início")
     assert result.reader_final_state.endswith("observado.")
-    assert result.jurisdiction == "Mercado informado pelo projeto"
+    assert not hasattr(result, "jurisdiction")
 
 
 def test_legacy_project_inputs_are_bounded_and_audited_for_safe_reruns():

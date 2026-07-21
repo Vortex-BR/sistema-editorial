@@ -145,7 +145,7 @@ def _build_search_subject(topic: str, brief: dict[str, Any]) -> str:
     natural phrase and only appends missing method/entity context.
     """
 
-    explicit = _normalized_phrase(brief.get("research_subject"), limit=360)
+    explicit = _normalized_phrase(brief.get("research_subject"), limit=500)
     if explicit:
         return explicit
 
@@ -181,9 +181,9 @@ def _build_search_subject(topic: str, brief: dict[str, Any]) -> str:
             break
 
     if not additions:
-        return base[:360]
+        return base[:500]
     suffix = " usando " + " e ".join(additions)
-    return f"{base}{suffix}"[:360].rstrip()
+    return f"{base}{suffix}"[:500].rstrip()
 
 
 @dataclass(frozen=True)
@@ -193,7 +193,6 @@ class KnowledgeContractInput:
     reader_final_state: str
     article_promise: str
     scope_limit: str
-    jurisdiction: str | None = None
     content_type: EditorialContentTypeV3 = (
         EditorialContentTypeV3.procedural_decision_guide
     )
@@ -303,11 +302,7 @@ class KnowledgeContractInput:
                 "uma escolha contextual e acompanhar o processo até o resultado final."
             ),
             scope_limit=scope_limit
-            or (
-                "O conteúdo termina no resultado final definido pelo briefing e não "
-                "avança para etapas posteriores não pesquisadas."
-            ),
-            jurisdiction=str(brief.get("jurisdiction") or "").strip() or None,
+            or "O conteúdo termina no resultado final definido pelo briefing.",
             content_type=content_type,
             requires_method_comparison=strict_brief_bool(
                 "requires_method_comparison",
@@ -434,7 +429,7 @@ class KnowledgeContractBuilder:
                     "como estabelecer e manter cada condição sem confundir presença com excesso",
                     "sinais observáveis de deficiência, excesso ou instabilidade",
                     "ajustes práticos sustentados e limites de aplicação",
-                    "práticas de segurança, higiene e conformidade quando aplicáveis",
+                    "práticas de higiene e critérios técnicos quando aplicáveis",
                 ],
                 "decisions": ["reconhecer se existem condições mínimas para começar"],
                 "roles": [
@@ -844,7 +839,6 @@ class KnowledgeContractBuilder:
             reader_final_state=data.reader_final_state,
             article_promise=data.article_promise,
             scope_limit=data.scope_limit,
-            jurisdiction=data.jurisdiction,
             requires_method_comparison=data.requires_method_comparison,
             requires_external_reference_per_method=(
                 data.requires_external_reference_per_method
@@ -869,8 +863,7 @@ class KnowledgeContractBuilder:
                 "research_intent": build_research_intent_payload(
                     canonical_subject=data.search_subject,
                     project_locale=data.project_locale,
-                    jurisdiction=data.jurisdiction,
-                    content_type=data.content_type,
+                            content_type=data.content_type,
                     method_labels=data.required_method_labels,
                 ),
                 "input_normalizations": list(data.input_normalizations),
@@ -968,7 +961,6 @@ class KnowledgeContractBuilder:
             reader_final_state=data.reader_final_state,
             article_promise=data.article_promise,
             scope_limit=data.scope_limit,
-            jurisdiction=data.jurisdiction,
             requires_method_comparison=False,
             requires_external_reference_per_method=False,
             approach_dimension=None,
@@ -991,8 +983,7 @@ class KnowledgeContractBuilder:
                 "research_intent": build_research_intent_payload(
                     canonical_subject=data.search_subject,
                     project_locale=data.project_locale,
-                    jurisdiction=data.jurisdiction,
-                    content_type=data.content_type,
+                            content_type=data.content_type,
                     method_labels=data.required_method_labels,
                 ),
                 "input_normalizations": list(data.input_normalizations),

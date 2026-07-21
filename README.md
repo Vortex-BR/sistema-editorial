@@ -2,9 +2,9 @@
 
 Sistema self-hosted de pesquisa e redação SEO com rastreabilidade por sentença. O redator só recebe fatos aprovados pelo auditor de pesquisa e o artigo final é bloqueado quando qualquer afirmação factual não possui evidência aprovada.
 
-> **Atualização V3.6.2 — Execution Reliability & Campaign Presets:** corrige criação com início automático, impede projetos órfãos sem run, separa dependências V2/V3, adiciona preflight com reparação segura, idempotência de ponta a ponta, retry durável do dispatch e recuperação de projetos antigos sem execução. Também inclui a campanha `MSB — Germinação no papel-toalha`. A migration head permanece `0035`. Consulte `CHANGELOG_EDITORIAL_V3_6_2.md`, `IMPLEMENTATION_REPORT_V3_6_2.md`, `VALIDATION_EDITORIAL_V3_6_2.md` e `docs/EDITORIAL_V3_6_2_EXECUTION_RELIABILITY.md`.
+> **Atualização V3.7 — Release Hardening & Emergent Intelligence:** corrige a divergência de migration no CI, constrói/testa/publica a mesma imagem sem rebuild, adiciona auditorias de dependências, secrets, Trivy e SBOM, implementa rotação MultiFernet do cofre, restringe CORS sem quebrar `Idempotency-Key`, adiciona CSP em Report-Only e permite perguntas emergentes pós-pesquisa com validação determinística. A migration head permanece `0036`. Consulte `CHANGELOG_EDITORIAL_V3_7.md`, `IMPLEMENTATION_REPORT_V3_7.md`, `VALIDATION_EDITORIAL_V3_7.md` e `docs/EDITORIAL_V3_7_RELEASE_HARDENING.md`.
 
-> **Base preservada:** a V3.6.1 continua responsável pela integridade pergunta → claim → frase → fonte e pelo vínculo da aprovação ao artefato exato. Esta atualização não muda o contrato editorial nem o schema; runs V3.6.1 com manifesto válido podem ser retomados. Projetos antigos sem run devem ser abertos e iniciados pela nova ação de recuperação.
+> **Base preservada:** a V3.6.3 continua responsável pela simplificação do briefing e correção do manifesto; a V3.6.2 mantém criação transacional, idempotência e retry durável; a V3.6.1 mantém a integridade pergunta → claim → frase → fonte.
 
 ## Publicar no EasyPanel
 
@@ -28,14 +28,15 @@ via Compose continuam explicitamente em modo somente leitura.
 
 > **pgvector é obrigatório.** A migration `0001` executa
 > `CREATE EXTENSION IF NOT EXISTS vector`, migrations posteriores criam colunas
-> `VECTOR` e o Compose/CI usam `pgvector/pgvector:pg17`. Uma imagem oficial
+> `VECTOR` e o Compose/CI usam `pgvector/pgvector:0.8.5-pg17`. Uma imagem oficial
 > `postgres:17` sem a extensão compilada não atende ao schema atual. PostgreSQL
-> 17.10 com pgvector 0.8.5 é a combinação validada; a tag `pg17` não fixa nem
-> promete essas versões exatas. Não troque a major de um banco existente apenas
-> alterando a tag da imagem.
+> 17.10 com pgvector 0.8.5 é a combinação validada; a tag versionada
+> `0.8.5-pg17` fixa a extensão. O scan de imagem continua obrigatório para
+> acompanhar correções da distribuição. Não troque a major de um banco existente
+> apenas alterando a tag da imagem.
 
 1. Crie um serviço PostgreSQL persistente chamado `seo-postgres` usando a imagem
-   `pgvector/pgvector:pg17`, com usuário, senha e banco próprios.
+   `pgvector/pgvector:0.8.5-pg17`, com usuário, senha e banco próprios.
 2. Crie um serviço Redis chamado `seo-redis` no mesmo projeto.
 3. No serviço App, selecione a fonte **Docker Image** e use exclusivamente a
    imagem imutável publicada pelo workflow depois do smoke test:
@@ -52,6 +53,7 @@ via Compose continuam explicitamente em modo somente leitura.
 DATABASE_URL=postgresql+asyncpg://USUARIO:SENHA_URL_ENCODED@HOST_INTERNO_POSTGRES:5432/BANCO
 REDIS_URL=redis://default:SENHA_REDIS@HOST_INTERNO_REDIS:6379/0
 CREDENTIAL_MASTER_KEY=CHAVE_FERNET_VALIDA
+CREDENTIAL_MASTER_KEYS=
 APP_ENV=production
 FRONTEND_ORIGIN=https://seo.example.com
 ADMIN_API_TOKEN=TOKEN_LONGO_E_ALEATORIO
@@ -64,6 +66,8 @@ PROVIDER_READ_TIMEOUT_SECONDS=90
 V3_MIN_CLAIMS_PER_METHOD=3
 V3_MIN_STEPS_PER_METHOD=3
 V3_WRITER_REPAIR_ATTEMPTS=1
+V3_EMERGENT_QUESTIONS_ENABLED=true
+V3_MAX_EMERGENT_QUESTIONS=6
 V3_MAX_SEARCH_PROVIDER_REQUESTS=96
 V3_MAX_SEARCH_PROVIDER_RETRIES=32
 V3_MAX_SEARCH_ESTIMATED_CREDITS=96
@@ -81,6 +85,8 @@ imagem durante o CI. Não os sobrescreva no runtime do EasyPanel. O startup
 rejeita qualquer sobrescrita divergente do arquivo `/app/build-info.json`.
 Deixe também vazios os campos **Command** e **Arguments** do serviço para manter
 o `ENTRYPOINT` da imagem.
+
+Durante uma rotação, configure `CREDENTIAL_MASTER_KEYS=NOVA_CHAVE,CHAVE_ANTIGA` em App, Worker e Beat. A primeira chave cifra e todas as chaves decifram. Execute primeiro o dry-run do endpoint administrativo de rotação antes de remover a chave antiga. O formato legado `CREDENTIAL_MASTER_KEY` continua aceito.
 
 Gere `CREDENTIAL_MASTER_KEY` com:
 
@@ -143,7 +149,7 @@ independência, recupera lacunas de forma dirigida e só então redige e executa
 revisões especializadas. Guias explicativos, comparações,
 troubleshooting e educação comercial não são forçados ao molde procedural.
 
-A V2 permanece preservada. A V3 exige a migration `0035`, projeto com
+A V2 permanece preservada. A V3 exige a migration `0036`, projeto com
 `editorial_pipeline_version=v3` e ativação explícita:
 
 ```env
@@ -207,13 +213,13 @@ A pesquisa V3.5 está detalhada em [docs/EDITORIAL_V3_5_RESEARCH.md](docs/EDITOR
 ## Executar
 
 Para bancos locais novos, o ambiente usa PostgreSQL 17 com pgvector pela imagem
-`pgvector/pgvector:pg17`; não substitua esse serviço por `postgres:17` puro. O
+`pgvector/pgvector:0.8.5-pg17`; não substitua esse serviço por `postgres:17` puro. O
 Compose usa o volume novo `postgres17_data` e não monta o antigo
 `postgres_data`. Se houver um volume PG16 com dados, preserve-o e faça uma migração
 planejada para o volume PG17; não renomeie o volume nem apenas troque sua tag.
 
 O ambiente comprovado executou PostgreSQL 17.10, pgvector 0.8.5 e o head Alembic
-real deste repositório, atualmente `0035`. Confirme sempre as versões efetivas
+real deste repositório, atualmente `0036`. Confirme sempre as versões efetivas
 com `SELECT version()`, `pg_extension`, `alembic current` e `alembic heads`.
 
 1. Copie `.env.example` para `.env` e defina `CREDENTIAL_MASTER_KEY`.

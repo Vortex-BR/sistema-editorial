@@ -27,7 +27,6 @@ def _intent() -> CanonicalResearchIntent:
         project_locale="pt-BR",
         project_language="pt",
         target_country="br",
-        jurisdiction="Brasil",
         content_type="procedural_decision_guide",
         entity_terms=("germinação", "sementes", "cannabis", "papel-toalha"),
         method_labels=("papel-toalha em recipiente fechado",),

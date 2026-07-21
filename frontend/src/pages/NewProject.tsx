@@ -45,7 +45,6 @@ type FormState = {
   reader_final_state: string;
   article_promise: string;
   scope_limit: string;
-  jurisdiction: string;
   requires_method_comparison: boolean;
   requires_external_reference_per_method: boolean;
 };
@@ -82,7 +81,6 @@ const initialForm: FormState = {
   reader_final_state: "",
   article_promise: "",
   scope_limit: "",
-  jurisdiction: "",
   requires_method_comparison: false,
   requires_external_reference_per_method: false,
 };
@@ -98,6 +96,7 @@ const TOPIC_MAX_LENGTH = 380;
 const READER_STATE_MAX_LENGTH = 1_000;
 const ARTICLE_PROMISE_MAX_LENGTH = 3_000;
 const SCOPE_LIMIT_MAX_LENGTH = 2_000;
+const RESEARCH_SUBJECT_MAX_LENGTH = 1_000;
 
 export function NewProject() {
   const nav = useNavigate();
@@ -232,7 +231,6 @@ export function NewProject() {
           reader_final_state: form.reader_final_state,
           article_promise: form.article_promise,
           scope_limit: form.scope_limit,
-          jurisdiction: form.jurisdiction,
           requires_method_comparison: form.requires_method_comparison,
           requires_external_reference_per_method:
             form.requires_external_reference_per_method,
@@ -619,29 +617,21 @@ export function NewProject() {
                   </small>
                 </label>
                 <label>
-                  Limite do escopo
+                  Ponto de encerramento do conteúdo
                   <textarea
-                    aria-label="Limite do escopo"
+                    aria-label="Ponto de encerramento do conteúdo"
                     required
                     minLength={10}
                     maxLength={SCOPE_LIMIT_MAX_LENGTH}
                     rows={3}
                     value={form.scope_limit}
                     onChange={(e) => update("scope_limit", e.target.value)}
-                    placeholder="Em qual ponto o conteúdo deve terminar e o que fica para outro guia?"
+                    placeholder="Em qual resultado concreto o conteúdo deve terminar?"
                   />
                   <small aria-hidden="true">
                     {form.scope_limit.length.toLocaleString("pt-BR")} /{" "}
                     {SCOPE_LIMIT_MAX_LENGTH.toLocaleString("pt-BR")} caracteres
                   </small>
-                </label>
-                <label>
-                  Jurisdição e conformidade
-                  <input
-                    value={form.jurisdiction}
-                    onChange={(e) => update("jurisdiction", e.target.value)}
-                    placeholder="Ex.: Brasil; verificar legislação e restrições locais"
-                  />
                 </label>
                 <label className="check">
                   <input
@@ -708,14 +698,14 @@ export function NewProject() {
                 Opcional; use quando a palavra-chave SEO for curta ou ambígua
               </small>
               <input
-                maxLength={240}
+                maxLength={RESEARCH_SUBJECT_MAX_LENGTH}
                 value={form.research_subject}
                 onChange={(e) => update("research_subject", e.target.value)}
                 placeholder="Ex.: comparação técnica de planos residenciais de fibra, cobertura e franquia"
               />
               <small>
                 Quando vazio, o sistema monta este assunto automaticamente com o
-                tópico, segmento, métodos e contexto.
+                tópico, segmento, métodos e contexto. {form.research_subject.length.toLocaleString("pt-BR")} / {RESEARCH_SUBJECT_MAX_LENGTH.toLocaleString("pt-BR")} caracteres.
               </small>
             </label>
             <label>

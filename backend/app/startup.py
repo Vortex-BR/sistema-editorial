@@ -5,7 +5,6 @@ import logging
 import sys
 from dataclasses import dataclass
 
-from cryptography.fernet import Fernet, InvalidToken
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,6 +26,7 @@ from app.services.model_route_policy import (
     normalize_model_route_configuration,
 )
 from app.services.skill_sync import sync_default_skills
+from app.services.vault import CredentialVault, VaultError
 from app.services.superior_skills import (
     SuperiorSkillDefinition,
     sync_superior_skills,
@@ -67,8 +67,8 @@ def production_environment_gaps(config: Settings) -> list[str]:
     if not _has_text(config.admin_api_token):
         gaps.append("ADMIN_API_TOKEN")
     try:
-        Fernet(config.credential_master_key.encode())
-    except (AttributeError, TypeError, ValueError):
+        CredentialVault(master_keys=config.credential_keyring)
+    except VaultError:
         gaps.append("CREDENTIAL_MASTER_KEY")
     if not (
         config.was_explicitly_configured("database_url")
@@ -122,14 +122,17 @@ def validate_production_environment(config: Settings = settings) -> None:
 def _usable_provider_credentials(
     config: Settings, credentials: tuple[Credential, ...]
 ) -> set[str]:
-    vault = Fernet(config.credential_master_key.encode())
+    try:
+        vault = CredentialVault(master_keys=config.credential_keyring)
+    except VaultError:
+        return set()
     providers: set[str] = set()
     for credential in credentials:
         if not credential.active:
             continue
         try:
-            plaintext = vault.decrypt(bytes(credential.encrypted_value)).decode()
-        except (InvalidToken, TypeError, UnicodeDecodeError, ValueError):
+            plaintext = vault.decrypt(bytes(credential.encrypted_value))
+        except VaultError:
             continue
         if plaintext.strip():
             providers.add(_enum_value(credential.provider))
