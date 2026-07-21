@@ -254,3 +254,47 @@ async def test_dispatch_result_never_turns_committed_run_into_a_false_creation_e
 
     assert result == expected
     publish.assert_awaited_once()
+
+@pytest.mark.asyncio
+async def test_run_start_gate_uses_the_current_app_runtime_settings(monkeypatch):
+    from app.core.config import Settings
+    from app.services.readiness import COMPONENT_ORDER, ReadinessReport
+
+    runtime_config = Settings(
+        _env_file=None,
+        app_env="production",
+        superior_skills_mode="enforced",
+    )
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                runtime_settings=runtime_config,
+                production_preflight_complete=True,
+            )
+        )
+    )
+    components = {name: "ready" for name in COMPONENT_ORDER}
+    components["worker"] = "missing"
+
+    async def report(
+        _db,
+        *,
+        preflight_complete,
+        config,
+        pipeline_version,
+        require_execution_dependencies,
+    ):
+        assert preflight_complete is True
+        assert config is runtime_config
+        assert pipeline_version == "v3"
+        assert require_execution_dependencies is True
+        return ReadinessReport(components)
+
+    monkeypatch.setattr(routes_module, "readiness_report", report)
+
+    with pytest.raises(HTTPException) as exc:
+        await routes_module._require_run_start_readiness(request, object(), "v3")
+
+    assert exc.value.status_code == 503
+    assert exc.value.detail["error_code"] == "SYSTEM_NOT_READY"
+    assert exc.value.detail["components"]["worker"]["status"] == "missing"

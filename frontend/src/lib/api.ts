@@ -18,6 +18,37 @@ const FIELD_LABELS:Record<string,string>={
   topic:'Tópico principal',
 }
 
+const READINESS_COMPONENT_LABELS:Record<string,string>={
+  api:'API',
+  postgresql:'PostgreSQL',
+  migrations:'migrações',
+  vector:'pgvector',
+  redis:'Redis',
+  broker:'broker',
+  worker:'worker',
+  beat:'agendador',
+  configuration:'pré-voo da aplicação',
+  execution_dependencies:'dependências de execução',
+  skills_mode:'modo das skills superiores',
+}
+const READINESS_STATE_LABELS:Record<string,string>={
+  unavailable:'indisponível',
+  unknown:'estado desconhecido',
+  outdated:'desatualizadas',
+  missing:'ausente',
+  stale:'heartbeat expirado',
+  duplicate:'mais de uma instância ativa',
+  invalid:'inválido',
+  not_ready:'incompletas',
+  not_enforced:'não está em modo enforced',
+}
+
+export type ReadinessStatus='ready'|'not_ready'|'unavailable'
+export type ReadinessReport={
+  status:ReadinessStatus
+  components:Record<string,{status:string}>
+}
+
 type AdminTokenRequester = () => Promise<string|null>
 let adminToken:string|null = null
 let adminTokenRequester:AdminTokenRequester|null = null
@@ -35,6 +66,41 @@ resetAdminTokenRequesterBarrier()
 
 function isRecord(value:unknown):value is Record<string,unknown>{
   return typeof value==='object'&&value!==null&&!Array.isArray(value)
+}
+
+function readinessComponents(value:unknown):Record<string,{status:string}>{
+  if(!isRecord(value)) return {}
+  const result:Record<string,{status:string}>={}
+  for(const [name,component] of Object.entries(value)){
+    if(isRecord(component)&&typeof component.status==='string'){
+      result[name]={status:component.status}
+    }
+  }
+  return result
+}
+
+function isReadinessReport(value:unknown):value is ReadinessReport{
+  if(!isRecord(value)||!['ready','not_ready'].includes(String(value.status))) return false
+  return isRecord(value.components)
+}
+
+export function readinessBlockers(report:Pick<ReadinessReport,'components'>):string[]{
+  return Object.entries(report.components)
+    .filter(([,component])=>component.status!=='ready')
+    .map(([name,component])=>{
+      const componentLabel=READINESS_COMPONENT_LABELS[name]||name.replaceAll('_',' ')
+      const stateLabel=READINESS_STATE_LABELS[component.status]||component.status.replaceAll('_',' ')
+      return `${componentLabel}: ${stateLabel}`
+    })
+}
+
+export function readinessMessage(
+  report:ReadinessReport,
+  fallback='O sistema ainda não está pronto para iniciar uma execução.',
+):string{
+  if(report.status==='ready') return 'Sistema pronto para iniciar novas execuções.'
+  const blockers=readinessBlockers(report)
+  return blockers.length?`${fallback} Bloqueios: ${blockers.join(', ')}.`:fallback
 }
 
 function publicString(value:unknown,fallback:string):string{
@@ -79,9 +145,11 @@ export function safePublicMessage(value:unknown, fallback='Não foi possível co
     const dependencies=Array.isArray(value.dependencies)
       ?value.dependencies.filter(item=>typeof item==='string').slice(0,12)
       :[]
+    const componentBlockers=readinessBlockers({components:readinessComponents(value.components)}).slice(0,12)
     const errorCode=typeof value.error_code==='string'?value.error_code:''
     const diagnostics=[
       dependencies.length?`Dependências: ${dependencies.join(', ')}.`:'',
+      componentBlockers.length?`Bloqueios: ${componentBlockers.join(', ')}.`:'',
       errorCode?`Código: ${errorCode}.`:'',
     ].filter(Boolean).join(' ')
     return diagnostics?`${base} ${diagnostics}`:base
@@ -100,6 +168,22 @@ async function request<T>(path:string, init?:RequestInit, token?:string):Promise
 
 export async function api<T>(path:string, init?:RequestInit):Promise<T>{
   return request<T>(path,init)
+}
+
+export async function getReadiness(pipelineVersion?:'v2'|'v3'):Promise<ReadinessReport>{
+  const query=pipelineVersion?`?pipeline_version=${encodeURIComponent(pipelineVersion)}`:''
+  try{
+    const response=await fetch(`${API_URL}/readiness${query}`,{
+      method:'GET',
+      headers:{Accept:'application/json'},
+    })
+    const payload=await response.json().catch(()=>null)
+    if(isReadinessReport(payload)&&(response.ok||response.status===503)) return payload
+    if(!response.ok) throw new Error(safePublicMessage(isRecord(payload)?payload.detail:payload))
+  }catch{
+    return {status:'unavailable',components:{api:{status:'unavailable'}}}
+  }
+  return {status:'unavailable',components:{api:{status:'unavailable'}}}
 }
 
 export function clearAdminToken():void{

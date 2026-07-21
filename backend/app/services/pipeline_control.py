@@ -973,6 +973,7 @@ class CheckpointService:
         result: dict | None = None,
         resumable: bool = True,
         event_context: EventContext | None = None,
+        idempotency_suffix: str | None = None,
     ) -> PipelineCheckpoint:
         completed_stage = sanitize_nul(completed_stage)
         next_stage = sanitize_nul(next_stage)
@@ -990,6 +991,7 @@ class CheckpointService:
             locked_run.attempt,
             self.contract_version,
             state,
+            idempotency_suffix=idempotency_suffix,
         )
         existing = await self.db.scalar(
             select(PipelineCheckpoint).where(
@@ -1066,11 +1068,16 @@ class CheckpointService:
         run_attempt: int,
         contract_version: str,
         state: dict,
+        *,
+        idempotency_suffix: str | None = None,
     ) -> str:
         research_cycle = int(state.get("research_cycle", 0))
         editor_cycle = int(state.get("editor_cycle", 0))
-        return (
+        key = (
             f"{completed_stage}:research-cycle-{research_cycle}:"
             f"editor-cycle-{editor_cycle}:run-attempt-{run_attempt}:"
             f"contract-{contract_version}"
         )
+        if idempotency_suffix:
+            key += f":{sanitize_nul(idempotency_suffix)}"
+        return key

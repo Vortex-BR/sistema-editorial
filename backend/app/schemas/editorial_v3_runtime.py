@@ -428,6 +428,40 @@ class V3DraftBlock(V3OpenAIStrictOutput):
         return self
 
 
+class V3WriterSectionOutput(V3OpenAIStrictOutput):
+    """One resumable writing unit for a single active knowledge section."""
+
+    section_id: str = Field(pattern=r"^[a-z][a-z0-9_]{2,99}$")
+    title: str | None = Field(default=None, min_length=15, max_length=100)
+    blocks: list[V3DraftBlock] = Field(min_length=2, max_length=60)
+    covered_method_ids: list[str] = Field(default_factory=list, max_length=30)
+    scope_confirmation: str = Field(min_length=10, max_length=1000)
+
+    @model_validator(mode="after")
+    def validate_section_unit(self):
+        positions = [block.position for block in self.blocks]
+        if positions != list(range(len(self.blocks))):
+            raise ValueError("Writer section block positions must be local and contiguous")
+        if any(block.section_id != self.section_id for block in self.blocks):
+            raise ValueError("Every writer section block must belong to its declared section")
+        block_ids = [block.block_id for block in self.blocks]
+        if len(block_ids) != len(set(block_ids)):
+            raise ValueError("Writer section block IDs must be unique")
+        sentence_ids = [
+            sentence.sentence_id
+            for block in self.blocks
+            for sentence in block.content_sentences
+        ]
+        if len(sentence_ids) != len(set(sentence_ids)):
+            raise ValueError("Writer section sentence IDs must be unique")
+        if len(self.covered_method_ids) != len(set(self.covered_method_ids)):
+            raise ValueError("Writer section method IDs must be unique")
+        block_methods = {block.method_id for block in self.blocks if block.method_id}
+        if not set(self.covered_method_ids).issubset(block_methods):
+            raise ValueError("Writer section methods must be represented by tagged blocks")
+        return self
+
+
 class V3WriterOutput(V3OpenAIStrictOutput):
     title: str = Field(min_length=15, max_length=100)
     blocks: list[V3DraftBlock] = Field(min_length=10, max_length=300)

@@ -57,6 +57,9 @@ class Settings(BaseSettings):
     v3_min_claims_per_method: int = Field(default=3, ge=1, le=12)
     v3_min_steps_per_method: int = Field(default=3, ge=1, le=12)
     v3_writer_repair_attempts: int = Field(default=1, ge=0, le=2)
+    v3_writer_section_repair_attempts: int = Field(default=1, ge=0, le=2)
+    v3_incremental_writer_enabled: bool = True
+    v3_graph_max_transitions: int = Field(default=96, ge=24, le=256)
     v3_emergent_questions_enabled: bool = True
     v3_max_emergent_questions: int = Field(default=6, ge=0, le=20)
     v3_min_word_count: int = Field(default=1800, ge=800, le=6000)

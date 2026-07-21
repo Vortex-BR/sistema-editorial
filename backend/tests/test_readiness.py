@@ -422,8 +422,14 @@ def test_readiness_endpoint_returns_safe_operational_state(monkeypatch, ready):
         components["broker"] = "unavailable"
     report = ReadinessReport(components)
 
-    async def fake_report(_db, *, preflight_complete):
+    runtime_config = readiness_settings(app_env="test")
+
+    async def fake_report(
+        _db, *, preflight_complete, config, pipeline_version
+    ):
         assert preflight_complete is True
+        assert config is runtime_config
+        assert pipeline_version == "v3"
         return report
 
     async def database_dependency():
@@ -434,9 +440,10 @@ def test_readiness_endpoint_returns_safe_operational_state(monkeypatch, ready):
     app.include_router(router)
     app.dependency_overrides[get_db] = database_dependency
     app.state.production_preflight_complete = True
+    app.state.runtime_settings = runtime_config
 
     with TestClient(app) as client:
-        response = client.get("/api/v1/readiness")
+        response = client.get("/api/v1/readiness?pipeline_version=v3")
 
     assert response.status_code == (200 if ready else 503)
     assert response.json() == report.safe_payload()

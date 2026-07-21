@@ -65,6 +65,7 @@ from app.schemas.editorial_v3_runtime import (
     V3LanguageReview,
     V3ResearchPlan,
     V3WriterOutput,
+    V3WriterSectionOutput,
 )
 from app.services.agent_runtime import AgentConfigurationError, AgentRuntime
 from app.services.content_versioning import ContentVersionService
@@ -255,7 +256,7 @@ class EditorialV3Executor:
             raise ValueError("Editorial V3 execution is disabled")
 
         manifest = await ExecutionManifestService(self.db).required(
-            self.pipeline_run.id
+            self.pipeline_run.id, project_id=self.project.id
         )
         self.execution_manifest = manifest.data
         self.runtime.bind_execution_manifest(manifest)
@@ -288,17 +289,41 @@ class EditorialV3Executor:
                 quality_gate=self.quality_gate,
             ),
             after_transition=self._checkpoint,
+            max_transitions=int(
+                self._optional_flag(
+                    "v3_graph_max_transitions", settings.v3_graph_max_transitions
+                )
+            ),
         )
         checkpoint = await self.checkpoints.latest(self.pipeline_run.id)
-        state = (
-            V3PipelineState.model_validate(checkpoint.state_json)
-            if checkpoint
-            else V3PipelineState(
+        try:
+            state = (
+                V3PipelineState.model_validate(checkpoint.state_json)
+                if checkpoint
+                else V3PipelineState(
+                    project_id=self.project.id,
+                    pipeline_run_id=self.pipeline_run.id,
+                )
+            )
+        except ValidationError as exc:
+            state = V3PipelineState(
                 project_id=self.project.id,
                 pipeline_run_id=self.pipeline_run.id,
+                stage=V3Stage.blocked,
+                blocking_reason=f"The latest V3 checkpoint is structurally invalid: {exc}",
+                blocking_code="V3_CHECKPOINT_INVALID",
             )
-        )
-        if checkpoint:
+            await self._checkpoint("checkpoint_validation", state)
+        if checkpoint and state.stage != V3Stage.blocked:
+            invariant_errors = state.resume_invariant_errors(
+                project_id=self.project.id, pipeline_run_id=self.pipeline_run.id
+            )
+            if invariant_errors:
+                state.stage = V3Stage.blocked
+                state.blocking_reason = "; ".join(invariant_errors)
+                state.blocking_code = "V3_CHECKPOINT_INVARIANT_VIOLATION"
+                await self._checkpoint("checkpoint_validation", state)
+        if checkpoint and state.stage != V3Stage.blocked:
             await self.runtime.event(
                 self.project.id,
                 self.pipeline_run.id,
@@ -319,7 +344,8 @@ class EditorialV3Executor:
             )
             await self.db.commit()
         try:
-            state = await graph.run(state)
+            if state.stage != V3Stage.blocked:
+                state = await graph.run(state)
         except V3PipelineBlocked as exc:
             state.stage = V3Stage.blocked
             state.blocking_reason = str(exc)
@@ -344,7 +370,7 @@ class EditorialV3Executor:
                 "human_approval",
                 {
                     "message": "O guia V3 passou pelos gates automáticos e aguarda revisão humana final.",
-                    "pipeline_contract_version": "editorial-v3.7",
+                    "pipeline_contract_version": "editorial-v3.8",
                 },
                 idempotency_key="v3.pipeline.needs_human_approval",
                 context=self._stage_context,
@@ -403,15 +429,14 @@ class EditorialV3Executor:
                     "active_node_ids": [
                         node.node_id
                         for node in contract.nodes
-                        if bool((node_resolution.get(node.node_id) or {}).get("included"))
+                        if bool(
+                            (node_resolution.get(node.node_id) or {}).get("included")
+                        )
                     ],
                 }
             }
         )
-        if (
-            contract.content_type
-            == EditorialContentTypeV3.procedural_decision_guide
-        ):
+        if contract.content_type == EditorialContentTypeV3.procedural_decision_guide:
             estimated_minimum = procedural_structural_minimum_words(
                 len(contract.required_method_labels), len(contract.nodes)
             )
@@ -440,8 +465,7 @@ class EditorialV3Executor:
             "audited_at": datetime.now(timezone.utc).isoformat(),
         }
         if (
-            contract.content_type
-            == EditorialContentTypeV3.procedural_decision_guide
+            contract.content_type == EditorialContentTypeV3.procedural_decision_guide
             and len(contract.required_method_labels) >= 2
         ):
             validation = ApproachTaxonomyValidationOutput.model_validate(
@@ -474,8 +498,7 @@ class EditorialV3Executor:
                 for item in contract.required_method_labels
             }
             returned_labels = {
-                " ".join(item.label.casefold().split())
-                for item in validation.items
+                " ".join(item.label.casefold().split()) for item in validation.items
             }
             invalid_items = [
                 item.label
@@ -504,8 +527,7 @@ class EditorialV3Executor:
                         + ", ".join(invalid_items)
                     )
                 raise V3PipelineBlocked(
-                    "Taxonomia de abordagens inválida: "
-                    + "; ".join(reasons[:8]),
+                    "Taxonomia de abordagens inválida: " + "; ".join(reasons[:8]),
                     "V3_APPROACH_TAXONOMY_INVALID",
                 )
             metadata["approach_taxonomy"] = validation.model_dump(mode="json")
@@ -611,16 +633,12 @@ class EditorialV3Executor:
             maximum_provider_requests=int(
                 self._flag("v3_max_search_provider_requests")
             ),
-            maximum_provider_retries=int(
-                self._flag("v3_max_search_provider_retries")
-            ),
+            maximum_provider_retries=int(self._flag("v3_max_search_provider_retries")),
             maximum_result_page_fetches=0,
             maximum_estimated_credits=float(
                 self._flag("v3_max_search_estimated_credits")
             ),
-            timeout_seconds=float(
-                self._flag("v3_source_discovery_timeout_seconds")
-            ),
+            timeout_seconds=float(self._flag("v3_source_discovery_timeout_seconds")),
         )
         if not persisted_budget:
             # Resume V3.4/early V3.5 checkpoints that persisted only aggregate
@@ -637,7 +655,8 @@ class EditorialV3Executor:
                 0, int(state.research_metrics.get("provider_retry_count") or 0)
             )
             budget.estimated_credits = max(
-                0.0, float(state.research_metrics.get("estimated_search_credits") or 0.0)
+                0.0,
+                float(state.research_metrics.get("estimated_search_credits") or 0.0),
             )
         circuits = ProviderCircuitBreaker.from_payload(
             state.research_metrics.get("provider_circuits")
@@ -717,7 +736,11 @@ class EditorialV3Executor:
         successful_attempts = 0
         attempt_payloads: list[dict] = []
 
-        reserve_capacity = max(0, plan.maximum_search_queries - min(len(plan.tasks), plan.maximum_search_queries))
+        reserve_capacity = max(
+            0,
+            plan.maximum_search_queries
+            - min(len(plan.tasks), plan.maximum_search_queries),
+        )
         desired_reserve = min(8, max(2, plan.maximum_search_queries // 4))
         supplemental_reserve = min(desired_reserve, reserve_capacity)
         initial_query_limit = max(1, plan.maximum_search_queries - supplemental_reserve)
@@ -798,9 +821,7 @@ class EditorialV3Executor:
                 if isinstance(value, (int, float)):
                     diagnostic_totals[key] = diagnostic_totals.get(key, 0) + value
         candidate_task_ids = {
-            task_id
-            for task_ids in task_map.values()
-            for task_id in task_ids
+            task_id for task_ids in task_map.values() for task_id in task_ids
         }
         executed_task_ids = set(executed_queries_by_task)
         all_task_ids = {task.task_id for task in plan.tasks}
@@ -838,8 +859,12 @@ class EditorialV3Executor:
             "initial_tasks_queried": len(executed_task_ids),
             "initial_tasks_with_candidates": len(candidate_task_ids),
             "initial_uncovered_task_ids": sorted(all_task_ids - candidate_task_ids),
-            "markets_by_task": {key: sorted(value) for key, value in markets_by_task.items()},
-            "languages_by_task": {key: sorted(value) for key, value in languages_by_task.items()},
+            "markets_by_task": {
+                key: sorted(value) for key, value in markets_by_task.items()
+            },
+            "languages_by_task": {
+                key: sorted(value) for key, value in languages_by_task.items()
+            },
             "providers_used": sorted(providers_used),
             "search_attempts": attempt_payloads[:240],
             "search_diagnostic_totals": diagnostic_totals,
@@ -861,8 +886,12 @@ class EditorialV3Executor:
                 "tasks_with_candidates": len(candidate_task_ids),
                 "uncovered_task_ids": sorted(all_task_ids - candidate_task_ids),
                 "failure_categories": failure_categories[:30],
-                "markets_by_task": {key: sorted(value) for key, value in markets_by_task.items()},
-                "languages_by_task": {key: sorted(value) for key, value in languages_by_task.items()},
+                "markets_by_task": {
+                    key: sorted(value) for key, value in markets_by_task.items()
+                },
+                "languages_by_task": {
+                    key: sorted(value) for key, value in languages_by_task.items()
+                },
                 "budget": budget.as_payload(),
                 "provider_circuits": circuits.as_payload(),
                 "provisional_error_code": provisional_code,
@@ -925,7 +954,9 @@ class EditorialV3Executor:
                 canonicalize_url(str(structured.url)),
                 canonicalize_url(str(structured.canonical_url)),
             }:
-                updated_task_map[key] = sorted(set(updated_task_map.get(key, [])) | set(tasks))
+                updated_task_map[key] = sorted(
+                    set(updated_task_map.get(key, [])) | set(tasks)
+                )
             if structured.assessment.usage_policy != SourceUsagePolicy.rejected:
                 existing[str(structured.document_id)] = structured
 
@@ -938,7 +969,9 @@ class EditorialV3Executor:
             minimum_score=float(self._flag("v3_min_candidate_relevance")),
         )
         state.source_task_map = expanded_task_map
-        state.source_documents = [item.model_dump(mode="json") for item in structured_documents]
+        state.source_documents = [
+            item.model_dump(mode="json") for item in structured_documents
+        ]
         state.research_metrics = {
             **state.research_metrics,
             "source_fetch_count": fetch_count,
@@ -954,7 +987,10 @@ class EditorialV3Executor:
         }
         accepted = sum(
             item.assessment.usage_policy
-            in {SourceUsagePolicy.authoritative_evidence, SourceUsagePolicy.corroborating_evidence}
+            in {
+                SourceUsagePolicy.authoritative_evidence,
+                SourceUsagePolicy.corroborating_evidence,
+            }
             for item in structured_documents
         )
         await self.runtime.event(
@@ -993,13 +1029,19 @@ class EditorialV3Executor:
         )
         state.source_coverage_report = report.as_payload()
         max_rounds = int(self._flag("v3_max_source_recovery_rounds"))
-        budget_reason = dict(state.research_metrics.get("search_budget") or {}).get("exhausted_by")
-        fetch_exhausted = int(state.research_metrics.get("source_fetch_count", 0)) >= int(
-            self._flag("v3_max_source_fetches")
+        budget_reason = dict(state.research_metrics.get("search_budget") or {}).get(
+            "exhausted_by"
         )
+        fetch_exhausted = int(
+            state.research_metrics.get("source_fetch_count", 0)
+        ) >= int(self._flag("v3_max_source_fetches"))
         state.source_recovery_exhausted = bool(
             report.status != "passed"
-            and (state.source_recovery_round >= max_rounds or budget_reason or fetch_exhausted)
+            and (
+                state.source_recovery_round >= max_rounds
+                or budget_reason
+                or fetch_exhausted
+            )
         )
         if state.source_recovery_exhausted:
             state.blocking_code = (
@@ -1045,8 +1087,8 @@ class EditorialV3Executor:
         plan = V3ResearchPlan.model_validate(state.research_plan)
         contract = ContentKnowledgeContract.model_validate(state.contract)
         intent = CanonicalResearchIntent.from_contract(contract)
-        max_rounds = 2 if intelligence_mode else int(
-            self._flag("v3_max_source_recovery_rounds")
+        max_rounds = (
+            2 if intelligence_mode else int(self._flag("v3_max_source_recovery_rounds"))
         )
         if current_round >= max_rounds:
             if intelligence_mode:
@@ -1075,7 +1117,8 @@ class EditorialV3Executor:
         provider_names = [provider for provider, _key in provider_credentials]
         report_payload = dict(state.source_coverage_report or {})
         recovery_entries = [
-            dict(item) for item in state.intelligence_recovery_tasks
+            dict(item)
+            for item in state.intelligence_recovery_tasks
             if isinstance(item, dict)
         ]
         recovery_by_task: dict[str, list[dict]] = {}
@@ -1089,7 +1132,8 @@ class EditorialV3Executor:
             else set(report_payload.get("deficient_task_ids") or [])
         )
         tasks = [
-            task for task in plan.tasks
+            task
+            for task in plan.tasks
             if not deficient_ids or task.task_id in deficient_ids
         ]
         task_reports = {
@@ -1272,7 +1316,9 @@ class EditorialV3Executor:
                 else "A recuperação direcionada não encontrou novas fontes e não há "
                 "mais tentativas seguras disponíveis."
             )
-        metric_prefix = "intelligence_recovery" if intelligence_mode else "source_recovery"
+        metric_prefix = (
+            "intelligence_recovery" if intelligence_mode else "source_recovery"
+        )
         state.research_metrics = {
             **state.research_metrics,
             "total_query_count": budget.logical_queries,
@@ -1287,9 +1333,7 @@ class EditorialV3Executor:
                 "intelligence" if intelligence_mode else "source_coverage"
             ),
             f"{metric_prefix}_failure_categories": [
-                *state.research_metrics.get(
-                    f"{metric_prefix}_failure_categories", []
-                ),
+                *state.research_metrics.get(f"{metric_prefix}_failure_categories", []),
                 *failure_categories,
             ][-100:],
             "markets_by_task": {
@@ -1339,8 +1383,7 @@ class EditorialV3Executor:
             raise V3PipelineBlocked("Knowledge contract ID is missing")
         contract = ContentKnowledgeContract.model_validate(state.contract)
         is_procedural = (
-            contract.content_type
-            == EditorialContentTypeV3.procedural_decision_guide
+            contract.content_type == EditorialContentTypeV3.procedural_decision_guide
         )
         plan = V3ResearchPlan.model_validate(state.research_plan)
         coverage_report = dict(state.source_coverage_report or {})
@@ -1393,7 +1436,9 @@ class EditorialV3Executor:
                     ],
                     persisted_plan=persisted_plan,
                 )
-                await self.artifacts.approve_claim_bundles(procedural_context=is_procedural)
+                await self.artifacts.approve_claim_bundles(
+                    procedural_context=is_procedural
+                )
                 claims = await self.artifacts.knowledge_claims(approved_only=True)
         state.knowledge_claims = [item.model_dump(mode="json") for item in claims]
         if len(claims) < minimum_approved_claims:
@@ -1466,14 +1511,11 @@ class EditorialV3Executor:
                     + ", ".join(missing_required),
                     "V3_REQUIRED_METHODS_MISSING",
                 )
-            minimum_claims_per_method = int(
-                self._flag("v3_min_claims_per_method")
-            )
+            minimum_claims_per_method = int(self._flag("v3_min_claims_per_method"))
             shallow_methods = [
                 item.method_id
                 for item in inventory_items
-                if len(set(item.supporting_claim_keys))
-                < minimum_claims_per_method
+                if len(set(item.supporting_claim_keys)) < minimum_claims_per_method
             ]
             if shallow_methods:
                 raise V3PipelineBlocked(
@@ -1487,8 +1529,7 @@ class EditorialV3Executor:
             ]
             references = self.reference_validator.select(inventory_items, documents)
             state.external_references = {
-                key: value.model_dump(mode="json")
-                for key, value in references.items()
+                key: value.model_dump(mode="json") for key, value in references.items()
             }
             inventory_method_ids = {item.method_id for item in inventory_items}
             missing_references = sorted(inventory_method_ids - set(references))
@@ -1591,9 +1632,7 @@ class EditorialV3Executor:
                 ),
                 output_schema=GenericKnowledgeSynthesisOutput,
             )
-            synthesis = GenericKnowledgeSynthesisOutput.model_validate(
-                synthesis_output
-            )
+            synthesis = GenericKnowledgeSynthesisOutput.model_validate(synthesis_output)
             methods_for_materialization = []
             sections_for_materialization = synthesis.sections
             gaps_for_materialization = synthesis.gaps
@@ -1647,7 +1686,7 @@ class EditorialV3Executor:
         )
         state.method_dossiers = [item.model_dump(mode="json") for item in methods]
         state.section_dossiers = [item.model_dump(mode="json") for item in sections]
-        state.decision_matrix = (matrix.model_dump(mode="json") if matrix else {})
+        state.decision_matrix = matrix.model_dump(mode="json") if matrix else {}
         state.knowledge_gaps = [item.model_dump(mode="json") for item in gaps]
         return state
 
@@ -1662,9 +1701,7 @@ class EditorialV3Executor:
                 "Canonical editorial intelligence state is missing",
                 "V3_INTELLIGENCE_STATE_MISSING",
             )
-        intelligence = ContentIntelligenceState.model_validate(
-            state.intelligence_state
-        )
+        intelligence = ContentIntelligenceState.model_validate(state.intelligence_state)
         provenance = await self.intelligence_repository.claim_provenance(
             include_graph_eligible=True
         )
@@ -1672,9 +1709,7 @@ class EditorialV3Executor:
             approved_only=False,
             intelligence_eligible=True,
         )
-        state.knowledge_claims = [
-            item.model_dump(mode="json") for item in graph_claims
-        ]
+        state.knowledge_claims = [item.model_dump(mode="json") for item in graph_claims]
         if bool(self._flag("v3_emergent_questions_enabled")):
             maximum = int(self._flag("v3_max_emergent_questions"))
             existing_emergent = sum(
@@ -1710,12 +1745,16 @@ class EditorialV3Executor:
                                 ],
                                 "evidence_claims": [
                                     {
-                                        "knowledge_node_id": item.get("knowledge_node_id"),
+                                        "knowledge_node_id": item.get(
+                                            "knowledge_node_id"
+                                        ),
                                         "evidence_role": item.get("evidence_role"),
                                         "claim_text": item.get("claim_text"),
                                         "conditions": item.get("conditions", []),
                                         "limitations": item.get("limitations", []),
-                                        "conclusion_status": item.get("conclusion_status"),
+                                        "conclusion_status": item.get(
+                                            "conclusion_status"
+                                        ),
                                         "conflict_group": item.get("conflict_group"),
                                     }
                                     for item in state.knowledge_claims[:160]
@@ -1756,9 +1795,12 @@ class EditorialV3Executor:
                         context=self._stage_context,
                     )
                 else:
-                    accepted_count = sum(
-                        item.origin == "emergent" for item in intelligence.questions
-                    ) - existing_emergent
+                    accepted_count = (
+                        sum(
+                            item.origin == "emergent" for item in intelligence.questions
+                        )
+                        - existing_emergent
+                    )
                     await self.runtime.event(
                         self.project.id,
                         self.pipeline_run.id,
@@ -1784,8 +1826,7 @@ class EditorialV3Executor:
                 for item in state.source_documents
             ],
             section_dossiers=[
-                SectionDossier.model_validate(item)
-                for item in state.section_dossiers
+                SectionDossier.model_validate(item) for item in state.section_dossiers
             ],
             gaps=[KnowledgeGap.model_validate(item) for item in state.knowledge_gaps],
             claim_provenance=provenance,
@@ -1820,9 +1861,7 @@ class EditorialV3Executor:
                 "Canonical editorial intelligence state is missing",
                 "V3_INTELLIGENCE_STATE_MISSING",
             )
-        intelligence = ContentIntelligenceState.model_validate(
-            state.intelligence_state
-        )
+        intelligence = ContentIntelligenceState.model_validate(state.intelligence_state)
         report = self.intelligence.validate_writer_readiness(intelligence)
         intelligence = self.intelligence.mark_writer_ready(intelligence, report)
         state.intelligence_state = intelligence.model_dump(mode="json")
@@ -1841,7 +1880,11 @@ class EditorialV3Executor:
                 for item in report.blockers
                 if item.recovery_class.value != "recoverable"
             ]
-            if recoverable and not nonrecoverable and state.intelligence_recovery_round < 2:
+            if (
+                recoverable
+                and not nonrecoverable
+                and state.intelligence_recovery_round < 2
+            ):
                 plan = V3ResearchPlan.model_validate(state.research_plan)
                 question_map = {
                     item.question_id: item for item in intelligence.questions
@@ -1865,9 +1908,9 @@ class EditorialV3Executor:
                         if question is not None
                         else str(finding.details.get("question") or finding.message)
                     )
-                    query = " ".join(
-                        f"{intelligence.topic} {question_text}".split()
-                    )[:280]
+                    query = " ".join(f"{intelligence.topic} {question_text}".split())[
+                        :280
+                    ]
                     for task in candidate_tasks[:2]:
                         key = (task.task_id, query.casefold())
                         if key in seen:
@@ -1973,8 +2016,7 @@ class EditorialV3Executor:
     async def writer(self, state: V3PipelineState) -> V3PipelineState:
         contract = ContentKnowledgeContract.model_validate(state.contract)
         is_procedural = (
-            contract.content_type
-            == EditorialContentTypeV3.procedural_decision_guide
+            contract.content_type == EditorialContentTypeV3.procedural_decision_guide
         )
         is_single_path_procedural = (
             contract.content_type == EditorialContentTypeV3.procedural_how_to
@@ -2168,15 +2210,31 @@ class EditorialV3Executor:
             "a progressão adequada ao tipo editorial. covered_method_ids deve ficar vazio e "
             "method_id deve ser null em todos os blocos."
         )
-        output = await self._agent_call(
-            role="writer",
-            key="article",
-            attempt=1,
-            input_json=writer_input,
-            prompt=common_prompt + (procedural_prompt if is_procedural else how_to_prompt if is_single_path_procedural else generic_prompt),
-            output_schema=V3WriterOutput,
+        mode_prompt = (
+            procedural_prompt
+            if is_procedural
+            else how_to_prompt
+            if is_single_path_procedural
+            else generic_prompt
         )
-        draft = V3WriterOutput.model_validate(output)
+        if bool(self._optional_flag("v3_incremental_writer_enabled", False)):
+            draft = await self._write_incremental_sections(
+                state,
+                writer_input=writer_input,
+                common_prompt=common_prompt,
+                mode_prompt=mode_prompt,
+                target_word_range=target_word_range,
+            )
+        else:
+            output = await self._agent_call(
+                role="writer",
+                key="article",
+                attempt=1,
+                input_json=writer_input,
+                prompt=common_prompt + mode_prompt,
+                output_schema=V3WriterOutput,
+            )
+            draft = V3WriterOutput.model_validate(output)
         pending_intelligence = self.intelligence.mark_draft_pending(
             ContentIntelligenceState.model_validate(state.intelligence_state)
         )
@@ -2193,19 +2251,21 @@ class EditorialV3Executor:
             state, draft, diagnostics
         )
         max_repairs = int(self._flag("v3_writer_repair_attempts"))
-        if diagnostics["blockers"] and max_repairs > 0:
+        if diagnostics["blockers"] and state.writer_repair_count < max_repairs:
             repair_input = {
                 **writer_input,
                 "draft_to_repair": draft.model_dump(mode="json"),
                 "deterministic_diagnostics": diagnostics,
             }
             try:
-                repair_input, repair_budget_report = self.context_budget.compact_writer_input(
-                    repair_input,
-                    maximum_characters=max(
-                        10_000,
-                        int(settings.agent_task_data_max_characters * 0.90),
-                    ),
+                repair_input, repair_budget_report = (
+                    self.context_budget.compact_writer_input(
+                        repair_input,
+                        maximum_characters=max(
+                            10_000,
+                            int(settings.agent_task_data_max_characters * 0.90),
+                        ),
+                    )
                 )
             except ContextBudgetExceeded as exc:
                 state.context_budget_report = exc.report.as_payload()
@@ -2220,7 +2280,7 @@ class EditorialV3Executor:
             repaired = await self._agent_call(
                 role="writer",
                 key="article_repair",
-                attempt=2,
+                attempt=state.writer_repair_count + 2,
                 input_json=repair_input,
                 prompt=(
                     "Repare o V3WriterOutput completo usando somente o contrato, os "
@@ -2229,12 +2289,18 @@ class EditorialV3Executor:
                     "Não crie fatos nem seções fora do contrato. Reequilibre profundidade "
                     "quando um nó periférico estiver maior que um nó central e respeite a "
                     "faixa de palavras. "
-                    + (procedural_prompt if is_procedural else how_to_prompt if is_single_path_procedural else generic_prompt)
+                    + (
+                        procedural_prompt
+                        if is_procedural
+                        else how_to_prompt
+                        if is_single_path_procedural
+                        else generic_prompt
+                    )
                 ),
                 output_schema=V3WriterOutput,
             )
             draft = V3WriterOutput.model_validate(repaired)
-            state.writer_repair_count = 1
+            state.writer_repair_count += 1
             pending_intelligence = self.intelligence.mark_draft_pending(
                 ContentIntelligenceState.model_validate(state.intelligence_state)
             )
@@ -2247,8 +2313,8 @@ class EditorialV3Executor:
                 minimum_word_count=target_word_range[0],
                 maximum_word_count=target_word_range[1],
             )
-            diagnostics, intelligence_draft_report = self._merge_intelligence_diagnostics(
-                state, draft, diagnostics
+            diagnostics, intelligence_draft_report = (
+                self._merge_intelligence_diagnostics(state, draft, diagnostics)
             )
         state.writer_diagnostics = diagnostics
         state.brief_compliance_report = diagnostics
@@ -2325,7 +2391,9 @@ class EditorialV3Executor:
                 draft=draft,
             )
             state.intelligence_state = intelligence_state.model_dump(mode="json")
-            state.intelligence_validation = intelligence_draft_report.model_dump(mode="json")
+            state.intelligence_validation = intelligence_draft_report.model_dump(
+                mode="json"
+            )
             state.intelligence_revision = intelligence_state.revision
             await self.intelligence_repository.save(
                 intelligence_state,
@@ -2335,11 +2403,662 @@ class EditorialV3Executor:
             )
         return state
 
+    async def _write_incremental_sections(
+        self,
+        state: V3PipelineState,
+        *,
+        writer_input: dict,
+        common_prompt: str,
+        mode_prompt: str,
+        target_word_range: tuple[int, int],
+    ) -> V3WriterOutput:
+        sequence = list(writer_input.get("editorial_sequence") or [])
+        section_ids = [str(item.get("section_id") or "") for item in sequence]
+        if not section_ids or any(not item for item in section_ids):
+            raise V3PipelineBlocked(
+                "Incremental writer received an empty or invalid editorial sequence",
+                "V3_INCREMENTAL_WRITER_SEQUENCE_INVALID",
+            )
+        if len(section_ids) != len(set(section_ids)):
+            raise V3PipelineBlocked(
+                "Incremental writer received duplicate section IDs",
+                "V3_INCREMENTAL_WRITER_SEQUENCE_DUPLICATE",
+            )
+
+        persisted_ids = set(state.writer_sections)
+        unknown_persisted = sorted(persisted_ids - set(section_ids))
+        if unknown_persisted:
+            raise V3PipelineBlocked(
+                "Persisted writer units no longer belong to the fixed editorial sequence: "
+                + ", ".join(unknown_persisted),
+                "V3_INCREMENTAL_WRITER_CHECKPOINT_DRIFT",
+            )
+
+        completed = list(state.writer_completed_section_ids)
+        expected_prefix = section_ids[: len(completed)]
+        if completed != expected_prefix:
+            raise V3PipelineBlocked(
+                "Persisted writer completion order is not a prefix of the fixed editorial sequence",
+                "V3_INCREMENTAL_WRITER_COMPLETION_ORDER_INVALID",
+            )
+        section_ranges = self._writer_section_word_ranges(
+            sequence, target_word_range=target_word_range
+        )
+        minimum_block_counts = self._writer_section_minimum_block_counts(len(sequence))
+        maximum_block_counts = self._writer_section_maximum_block_counts(
+            len(sequence), minimum_block_counts=minimum_block_counts
+        )
+        total = len(sequence)
+        for index, section in enumerate(sequence):
+            section_id = section_ids[index]
+            if section_id in completed:
+                try:
+                    self._validate_writer_section_unit(
+                        state.writer_sections[section_id],
+                        state=state,
+                        expected_section_id=section_id,
+                        first=index == 0,
+                        minimum_blocks=minimum_block_counts[index],
+                        maximum_blocks=maximum_block_counts[index],
+                        target_word_range=section_ranges[index],
+                    )
+                except (ValidationError, ValueError, V3PipelineBlocked) as exc:
+                    raise V3PipelineBlocked(
+                        f"Persisted writer unit {section_id} is invalid: {exc}",
+                        "V3_INCREMENTAL_WRITER_UNIT_INVALID",
+                    ) from exc
+                continue
+
+            state.writer_progress = {
+                "status": "running",
+                "current_section_id": section_id,
+                "completed": len(completed),
+                "total": total,
+            }
+            await self.runtime.event(
+                self.project.id,
+                self.pipeline_run.id,
+                "v3.writer.unit_started",
+                "writer",
+                {
+                    "message": f"Redigindo informação {index + 1} de {total}: {section_id}",
+                    "section_id": section_id,
+                    "position": index + 1,
+                    "total": total,
+                },
+                idempotency_key=f"v3.writer.unit_started:{section_id}",
+                context=self._stage_context,
+            )
+
+            section_range = section_ranges[index]
+            section_input = self._writer_section_input(
+                writer_input,
+                section=section,
+                section_id=section_id,
+                section_index=index,
+                section_count=total,
+                target_word_range=section_range,
+                minimum_block_count=minimum_block_counts[index],
+                maximum_block_count=maximum_block_counts[index],
+                state=state,
+            )
+            try:
+                section_input, section_budget = (
+                    self.context_budget.compact_writer_input(
+                        section_input,
+                        maximum_characters=max(
+                            10_000,
+                            int(settings.agent_task_data_max_characters * 0.70),
+                        ),
+                    )
+                )
+            except ContextBudgetExceeded as exc:
+                state.context_budget_report = {
+                    **(state.context_budget_report or {}),
+                    f"writer_section:{section_id}": exc.report.as_payload(),
+                }
+                raise V3PipelineBlocked(
+                    str(exc),
+                    "V3_WRITER_SECTION_CONTEXT_BUDGET_EXCEEDED",
+                ) from exc
+            state.context_budget_report = {
+                **(state.context_budget_report or {}),
+                f"writer_section:{section_id}": section_budget.as_payload(),
+            }
+
+            unit_common_prompt = common_prompt.replace(
+                "Inclua exatamente um bloco H1, idêntico ao campo title. ",
+                "O artigo completo terá exatamente um H1 idêntico ao title; somente a primeira unidade pode criá-lo. ",
+            ).replace(
+                "covered_section_ids deve conter todos e somente os nós ativos indicados em editorial_sequence, na mesma progressão representada pelos blocos. ",
+                "Cada unidade deve conter blocos somente para current_section e usar exatamente o section_id solicitado. ",
+            )
+            unit_mode_prompt = mode_prompt.replace(
+                "covered_method_ids deve conter todas e somente as abordagens aprovadas.",
+                "covered_method_ids deve conter somente as abordagens efetivamente desenvolvidas nesta unidade.",
+            )
+            boundary_prompt = (
+                " Gere somente a unidade da seção current_section; não escreva, resuma "
+                "nem antecipe as demais seções. Use posições locais iniciando em zero e "
+                f"produza entre {minimum_block_counts[index]} e "
+                f"{maximum_block_counts[index]} blocos úteis. "
+            )
+            if index == 0:
+                boundary_prompt += (
+                    "Esta é a primeira unidade: title deve ser preenchido e deve existir "
+                    "exatamente um bloco H1 cujo texto seja idêntico a title. "
+                )
+            else:
+                boundary_prompt += (
+                    "Esta não é a primeira unidade: title deve ser null, não gere H1 e "
+                    "inicie a seção com H2 ou H3 apropriado. "
+                )
+            boundary_prompt += (
+                "Cada bloco deve usar exatamente o section_id atual. Mantenha conexão "
+                "natural com previous_writer_context, resolva os critérios de conclusão "
+                "do nó e não repita informações já concluídas."
+            )
+            output = await self._agent_call(
+                role="writer",
+                key=f"article_section:{section_id}",
+                attempt=1,
+                input_json=section_input,
+                prompt=unit_common_prompt + unit_mode_prompt + boundary_prompt,
+                output_schema=V3WriterSectionOutput,
+            )
+            try:
+                unit = self._validate_writer_section_unit(
+                    output,
+                    state=state,
+                    expected_section_id=section_id,
+                    first=index == 0,
+                    minimum_blocks=minimum_block_counts[index],
+                    maximum_blocks=maximum_block_counts[index],
+                    target_word_range=section_range,
+                )
+            except (ValidationError, ValueError, V3PipelineBlocked) as exc:
+                repair_limit = int(
+                    self._optional_flag(
+                        "v3_writer_section_repair_attempts",
+                        settings.v3_writer_section_repair_attempts,
+                    )
+                )
+                last_error: Exception = exc
+                repair_source = output
+                unit = None
+                for repair_attempt in range(1, repair_limit + 1):
+                    state.writer_section_repair_counts[section_id] = repair_attempt
+                    repair_input = {
+                        **section_input,
+                        "writer_unit_to_repair": repair_source,
+                        "unit_validation_error": str(last_error)[:4000],
+                    }
+                    try:
+                        repair_input, repair_budget = (
+                            self.context_budget.compact_writer_input(
+                                repair_input,
+                                maximum_characters=max(
+                                    10_000,
+                                    int(settings.agent_task_data_max_characters * 0.85),
+                                ),
+                            )
+                        )
+                    except ContextBudgetExceeded as budget_exc:
+                        state.context_budget_report = {
+                            **(state.context_budget_report or {}),
+                            f"writer_section_repair:{section_id}:{repair_attempt}": budget_exc.report.as_payload(),
+                        }
+                        raise V3PipelineBlocked(
+                            str(budget_exc),
+                            "V3_WRITER_SECTION_REPAIR_CONTEXT_BUDGET_EXCEEDED",
+                        ) from budget_exc
+                    state.context_budget_report = {
+                        **(state.context_budget_report or {}),
+                        f"writer_section_repair:{section_id}:{repair_attempt}": repair_budget.as_payload(),
+                    }
+                    repair_source = await self._agent_call(
+                        role="writer",
+                        key=f"article_section_repair:{section_id}",
+                        attempt=repair_attempt,
+                        input_json=repair_input,
+                        prompt=(
+                            "Repare somente a unidade current_section. Corrija o erro "
+                            "determinístico informado sem alterar o escopo, sem criar claims "
+                            "e sem escrever outras seções. Respeite a faixa de palavras, "
+                            "os limites mínimo e máximo de blocos, as evidências autorizadas, as "
+                            "posições locais e as regras de H1/title da unidade."
+                        ),
+                        output_schema=V3WriterSectionOutput,
+                    )
+                    try:
+                        unit = self._validate_writer_section_unit(
+                            repair_source,
+                            state=state,
+                            expected_section_id=section_id,
+                            first=index == 0,
+                            minimum_blocks=minimum_block_counts[index],
+                            maximum_blocks=maximum_block_counts[index],
+                            target_word_range=section_range,
+                        )
+                        break
+                    except (
+                        ValidationError,
+                        ValueError,
+                        V3PipelineBlocked,
+                    ) as repair_exc:
+                        last_error = repair_exc
+                if unit is None:
+                    raise V3PipelineBlocked(
+                        f"Writer unit {section_id} remained invalid after repair: {last_error}",
+                        "V3_INCREMENTAL_WRITER_UNIT_INVALID",
+                    ) from last_error
+
+            state.writer_sections[section_id] = unit.model_dump(mode="json")
+            completed.append(section_id)
+            state.writer_completed_section_ids = completed
+            state.writer_progress = {
+                "status": "running",
+                "current_section_id": None,
+                "completed": len(completed),
+                "total": total,
+                "last_completed_section_id": section_id,
+            }
+            await self._progress_checkpoint(
+                "writer",
+                state,
+                unit_id=section_id,
+                completed=len(completed),
+                total=total,
+            )
+
+        raw_draft = self._assemble_writer_section_payloads(state, section_ids)
+        try:
+            draft = V3WriterOutput.model_validate(raw_draft)
+        except ValidationError as exc:
+            max_repairs = int(self._flag("v3_writer_repair_attempts"))
+            if state.writer_repair_count >= max_repairs:
+                raise V3PipelineBlocked(
+                    f"Incremental writer assembly is invalid: {exc}",
+                    "V3_INCREMENTAL_WRITER_ASSEMBLY_INVALID",
+                ) from exc
+            repair_input = {
+                **writer_input,
+                "draft_to_repair": raw_draft,
+                "assembly_validation_errors": exc.errors(include_url=False),
+            }
+            try:
+                repair_input, repair_budget = self.context_budget.compact_writer_input(
+                    repair_input,
+                    maximum_characters=max(
+                        10_000, int(settings.agent_task_data_max_characters * 0.90)
+                    ),
+                )
+            except ContextBudgetExceeded as budget_exc:
+                state.context_budget_report = {
+                    **(state.context_budget_report or {}),
+                    "writer_assembly_repair": budget_exc.report.as_payload(),
+                }
+                raise V3PipelineBlocked(
+                    str(budget_exc),
+                    "V3_WRITER_ASSEMBLY_REPAIR_CONTEXT_BUDGET_EXCEEDED",
+                ) from budget_exc
+            state.context_budget_report = {
+                **(state.context_budget_report or {}),
+                "writer_assembly_repair": repair_budget.as_payload(),
+            }
+            repaired = await self._agent_call(
+                role="writer",
+                key="article_assembly_repair",
+                attempt=state.writer_repair_count + 2,
+                input_json=repair_input,
+                prompt=(
+                    "Normalize e repare o rascunho montado por unidades em um único "
+                    "V3WriterOutput válido. Preserve a ordem, o conteúdo factual e as "
+                    "evidências das unidades; não invente claims nem seções. Garanta um "
+                    "único H1 igual ao title, posições globais contíguas e todos os nós "
+                    "ativos em covered_section_ids."
+                ),
+                output_schema=V3WriterOutput,
+            )
+            draft = V3WriterOutput.model_validate(repaired)
+            state.writer_repair_count += 1
+
+        state.writer_progress = {
+            "status": "assembled",
+            "current_section_id": None,
+            "completed": total,
+            "total": total,
+        }
+        return draft
+
+    @staticmethod
+    def _writer_section_minimum_block_counts(section_count: int) -> list[int]:
+        if section_count < 1:
+            raise V3PipelineBlocked(
+                "Incremental writer received no sections for block allocation",
+                "V3_INCREMENTAL_WRITER_SEQUENCE_INVALID",
+            )
+        counts = [2] * section_count
+        missing = max(0, 10 - sum(counts))
+        for index in range(missing):
+            counts[index % section_count] += 1
+        return counts
+
+    @staticmethod
+    def _writer_section_maximum_block_counts(
+        section_count: int, *, minimum_block_counts: list[int]
+    ) -> list[int]:
+        if section_count < 1 or len(minimum_block_counts) != section_count:
+            raise V3PipelineBlocked(
+                "Incremental writer received an invalid block allocation",
+                "V3_INCREMENTAL_WRITER_BLOCK_BUDGET_INVALID",
+            )
+        article_maximum = 300
+        preferred_per_section = 30
+        quotient, remainder = divmod(article_maximum, section_count)
+        maximums = [
+            min(preferred_per_section, quotient + (1 if index < remainder else 0))
+            for index in range(section_count)
+        ]
+        if any(
+            maximums[index] < minimum_block_counts[index]
+            for index in range(section_count)
+        ):
+            raise V3PipelineBlocked(
+                "The article block budget is too small for the active section structure",
+                "V3_INCREMENTAL_WRITER_BLOCK_BUDGET_INFEASIBLE",
+            )
+        return maximums
+
+    @staticmethod
+    def _writer_section_word_ranges(
+        sequence: list[dict],
+        *,
+        target_word_range: tuple[int, int],
+    ) -> list[tuple[int, int]]:
+        section_count = len(sequence)
+        minimum_total, maximum_total = target_word_range
+        if section_count < 1 or minimum_total < 1 or maximum_total < minimum_total:
+            raise V3PipelineBlocked(
+                "Incremental writer received an invalid article word budget",
+                "V3_INCREMENTAL_WRITER_WORD_BUDGET_INVALID",
+            )
+
+        # Prefer enough room for two useful blocks while adapting to blueprints
+        # with many active sections. The complete allocation never exceeds the
+        # article maximum, so section prompts cannot collectively force an
+        # overlong draft.
+        preferred_floor = 120
+        absolute_floor = 40
+        per_section_floor = min(preferred_floor, maximum_total // section_count)
+        if per_section_floor < absolute_floor:
+            raise V3PipelineBlocked(
+                "The article word budget is too small for the number of active sections",
+                "V3_INCREMENTAL_WRITER_WORD_BUDGET_INFEASIBLE",
+            )
+
+        minimum_weights = [
+            max(0.1, float(item.get("minimum_depth_weight") or 1.0))
+            for item in sequence
+        ]
+        maximum_weights = [
+            max(0.1, float(item.get("maximum_depth_weight") or 1.0))
+            for item in sequence
+        ]
+
+        def allocate(
+            total: int, lower_bounds: list[int], weights: list[float]
+        ) -> list[int]:
+            remaining = total - sum(lower_bounds)
+            if remaining < 0:
+                raise V3PipelineBlocked(
+                    "The incremental writer allocation exceeds the article word budget",
+                    "V3_INCREMENTAL_WRITER_WORD_BUDGET_INFEASIBLE",
+                )
+            if remaining == 0:
+                return list(lower_bounds)
+            weight_total = sum(weights)
+            raw = [remaining * weight / weight_total for weight in weights]
+            extras = [int(value) for value in raw]
+            remainder = remaining - sum(extras)
+            order = sorted(
+                range(section_count),
+                key=lambda index: (raw[index] - extras[index], weights[index], -index),
+                reverse=True,
+            )
+            for index in order[:remainder]:
+                extras[index] += 1
+            return [
+                lower_bounds[index] + extras[index] for index in range(section_count)
+            ]
+
+        minimum_budget_total = max(minimum_total, per_section_floor * section_count)
+        minimums = allocate(
+            minimum_budget_total,
+            [per_section_floor] * section_count,
+            minimum_weights,
+        )
+        maximums = allocate(maximum_total, minimums, maximum_weights)
+        return list(zip(minimums, maximums, strict=True))
+
+    def _writer_section_input(
+        self,
+        writer_input: dict,
+        *,
+        section: dict,
+        section_id: str,
+        section_index: int,
+        section_count: int,
+        target_word_range: tuple[int, int],
+        minimum_block_count: int,
+        maximum_block_count: int,
+        state: V3PipelineState,
+    ) -> dict:
+        previous_context: list[dict] = []
+        for previous_id in state.writer_completed_section_ids[-2:]:
+            payload = state.writer_sections.get(previous_id) or {}
+            blocks = payload.get("blocks") or []
+            previous_context.append(
+                {
+                    "section_id": previous_id,
+                    "scope_confirmation": payload.get("scope_confirmation"),
+                    "closing_blocks": blocks[-3:],
+                }
+            )
+        section_dossiers = [
+            item
+            for item in writer_input.get("section_dossiers") or []
+            if str(item.get("section_id") or item.get("knowledge_node_id") or "")
+            == section_id
+        ]
+        allowed_claim_ids = {
+            str(claim_id)
+            for dossier in section_dossiers
+            for claim_id in dossier.get("allowed_claim_ids") or []
+        }
+        intelligence = writer_input.get("editorial_intelligence") or {}
+        for plan in intelligence.get("section_plans") or []:
+            if str(plan.get("section_id") or "") == section_id:
+                allowed_claim_ids.update(
+                    str(claim_id) for claim_id in plan.get("allowed_claim_ids") or []
+                )
+        claim_catalog = [
+            item
+            for item in writer_input.get("claim_catalog") or []
+            if str(item.get("claim_id") or "") in allowed_claim_ids
+            or str(item.get("knowledge_node_id") or "") == section_id
+        ]
+        return {
+            **writer_input,
+            "current_section": section,
+            "current_section_index": section_index,
+            "section_count": section_count,
+            "target_word_range": list(target_word_range),
+            "section_dossiers": section_dossiers,
+            "claim_catalog": claim_catalog,
+            "approved_claim_ids": [item.get("claim_id") for item in claim_catalog],
+            "previous_writer_context": previous_context,
+            "writer_unit_contract": {
+                "one_section_only": True,
+                "local_block_positions": True,
+                "minimum_block_count": minimum_block_count,
+                "maximum_block_count": maximum_block_count,
+                "first_unit": section_index == 0,
+                "last_unit": section_index == section_count - 1,
+            },
+        }
+
+    @staticmethod
+    def _validate_writer_section_boundary(
+        unit: V3WriterSectionOutput,
+        *,
+        first: bool,
+        minimum_blocks: int = 2,
+        maximum_blocks: int = 60,
+    ) -> None:
+        if len(unit.blocks) < minimum_blocks:
+            raise ValueError(f"Writer unit requires at least {minimum_blocks} blocks")
+        if len(unit.blocks) > maximum_blocks:
+            raise ValueError(f"Writer unit allows at most {maximum_blocks} blocks")
+        h1_blocks = [block for block in unit.blocks if block.type == "h1"]
+        if first:
+            if unit.title is None or len(h1_blocks) != 1:
+                raise ValueError(
+                    "The first writer unit requires title and exactly one H1"
+                )
+            h1_text = h1_blocks[0].sentences[0].text.strip()
+            if h1_text != unit.title.strip():
+                raise ValueError("The first writer unit H1 must be identical to title")
+        else:
+            if unit.title is not None or h1_blocks:
+                raise ValueError("Only the first writer unit may contain title or H1")
+            if unit.blocks[0].type not in {"h2", "h3"}:
+                raise ValueError(
+                    "Every subsequent writer unit must begin with H2 or H3"
+                )
+
+    def _validate_writer_section_unit(
+        self,
+        payload: dict | V3WriterSectionOutput,
+        *,
+        state: V3PipelineState,
+        expected_section_id: str,
+        first: bool,
+        minimum_blocks: int,
+        maximum_blocks: int,
+        target_word_range: tuple[int, int],
+    ) -> V3WriterSectionOutput:
+        unit = V3WriterSectionOutput.model_validate(payload)
+        self._validate_writer_section_boundary(
+            unit,
+            first=first,
+            minimum_blocks=minimum_blocks,
+            maximum_blocks=maximum_blocks,
+        )
+        if unit.section_id != expected_section_id:
+            raise ValueError(
+                f"Writer returned section {unit.section_id} while "
+                f"{expected_section_id} was requested"
+            )
+        text = " ".join(
+            sentence.text
+            for block in unit.blocks
+            for sentence in block.content_sentences
+        )
+        word_count = len(re.findall(r"\b\w+[\wÀ-ÿ'-]*\b", text))
+        minimum_words, maximum_words = target_word_range
+        if word_count < minimum_words or word_count > maximum_words:
+            raise ValueError(
+                "Writer unit word count is outside its allocated range "
+                f"({word_count} not in {minimum_words}-{maximum_words})"
+            )
+        self._validate_writer_section_evidence(unit, state)
+        return unit
+
+    def _validate_writer_section_evidence(
+        self, unit: V3WriterSectionOutput, state: V3PipelineState
+    ) -> None:
+        partial = V3WriterOutput.model_construct(
+            title=unit.title or "Incremental writer section validation",
+            blocks=unit.blocks,
+            covered_section_ids=[unit.section_id],
+            covered_method_ids=unit.covered_method_ids,
+            unsupported_claims=[],
+            scope_confirmation=unit.scope_confirmation,
+        )
+        self._validate_draft_evidence(partial, state, require_complete_scope=False)
+
+    def _assemble_writer_section_payloads(
+        self, state: V3PipelineState, section_ids: list[str]
+    ) -> dict:
+        blocks: list[dict] = []
+        covered_methods: list[str] = []
+        confirmations: list[str] = []
+        title: str | None = None
+        for section_index, section_id in enumerate(section_ids):
+            unit = V3WriterSectionOutput.model_validate(
+                state.writer_sections[section_id]
+            )
+            self._validate_writer_section_boundary(unit, first=section_index == 0)
+            if section_index == 0:
+                title = unit.title
+            confirmations.append(unit.scope_confirmation)
+            for method_id in unit.covered_method_ids:
+                if method_id not in covered_methods:
+                    covered_methods.append(method_id)
+            for local_index, source_block in enumerate(unit.blocks):
+                block = source_block.model_dump(mode="json")
+                block["position"] = len(blocks)
+                block["block_id"] = str(
+                    uuid.uuid5(
+                        self.pipeline_run.id,
+                        f"writer:block:{section_id}:{local_index}",
+                    )
+                )
+                self._stabilize_writer_sentence_ids(
+                    block,
+                    section_id=section_id,
+                    block_index=local_index,
+                )
+                blocks.append(block)
+        confirmation = " | ".join(confirmations)
+        if len(confirmation) > 1000:
+            confirmation = confirmation[:997].rstrip() + "..."
+        return {
+            "title": title,
+            "blocks": blocks,
+            "covered_section_ids": section_ids,
+            "covered_method_ids": covered_methods,
+            "unsupported_claims": [],
+            "scope_confirmation": confirmation,
+        }
+
+    def _stabilize_writer_sentence_ids(
+        self, block: dict, *, section_id: str, block_index: int
+    ) -> None:
+        def assign(sentence: dict, path: str) -> None:
+            sentence["sentence_id"] = str(
+                uuid.uuid5(
+                    self.pipeline_run.id,
+                    f"writer:sentence:{section_id}:{block_index}:{path}",
+                )
+            )
+
+        for index, sentence in enumerate(block.get("sentences") or []):
+            assign(sentence, f"sentences:{index}")
+        for index, sentence in enumerate(block.get("table_headers") or []):
+            assign(sentence, f"table_headers:{index}")
+        for row_index, row in enumerate(block.get("table_rows") or []):
+            for cell_index, sentence in enumerate(row.get("cells") or []):
+                assign(sentence, f"table_rows:{row_index}:cells:{cell_index}")
+        callout_title = block.get("callout_title")
+        if callout_title:
+            assign(callout_title, "callout_title")
+
     async def development_editor(self, state: V3PipelineState) -> V3PipelineState:
         contract = ContentKnowledgeContract.model_validate(state.contract)
         is_procedural = (
-            contract.content_type
-            == EditorialContentTypeV3.procedural_decision_guide
+            contract.content_type == EditorialContentTypeV3.procedural_decision_guide
         )
         is_single_path_procedural = (
             contract.content_type == EditorialContentTypeV3.procedural_how_to
@@ -2377,7 +3096,14 @@ class EditorialV3Executor:
             state,
             stage="development_editor",
             review_schema=V3DevelopmentReview,
-            prompt=universal_prompt + (procedural_prompt if is_procedural else how_to_prompt if is_single_path_procedural else generic_prompt),
+            prompt=universal_prompt
+            + (
+                procedural_prompt
+                if is_procedural
+                else how_to_prompt
+                if is_single_path_procedural
+                else generic_prompt
+            ),
         )
         diagnostics = self._draft_diagnostics(
             state,
@@ -2490,7 +3216,9 @@ class EditorialV3Executor:
                     "language_review": state.language_review,
                     "editorial_intelligence": (
                         self.intelligence.writer_payload(
-                            ContentIntelligenceState.model_validate(state.intelligence_state)
+                            ContentIntelligenceState.model_validate(
+                                state.intelligence_state
+                            )
                         )
                         if state.intelligence_state
                         else {}
@@ -2530,8 +3258,8 @@ class EditorialV3Executor:
             minimum_word_count=target_range[0],
             maximum_word_count=target_range[1],
         )
-        final_diagnostics, intelligence_draft_report = self._merge_intelligence_diagnostics(
-            state, draft, final_diagnostics
+        final_diagnostics, intelligence_draft_report = (
+            self._merge_intelligence_diagnostics(state, draft, final_diagnostics)
         )
         state.writer_diagnostics = final_diagnostics
         state.brief_compliance_report = final_diagnostics
@@ -2550,7 +3278,9 @@ class EditorialV3Executor:
                 draft=draft,
             )
             state.intelligence_state = intelligence_state.model_dump(mode="json")
-            state.intelligence_validation = intelligence_draft_report.model_dump(mode="json")
+            state.intelligence_validation = intelligence_draft_report.model_dump(
+                mode="json"
+            )
             state.intelligence_revision = intelligence_state.revision
             await self.intelligence_repository.save(
                 intelligence_state,
@@ -2562,11 +3292,15 @@ class EditorialV3Executor:
 
     async def external_reference_gate(self, state: V3PipelineState) -> V3PipelineState:
         await self._stage(
-            "external_reference_gate", "Confirmando referências externas aplicáveis", state
+            "external_reference_gate",
+            "Confirmando referências externas aplicáveis",
+            state,
         )
         draft = V3WriterOutput.model_validate(state.draft)
         text = " ".join(
-            sentence.text for block in draft.blocks for sentence in block.content_sentences
+            sentence.text
+            for block in draft.blocks
+            for sentence in block.content_sentences
         )
         blockers: list[str] = []
         for method in [
@@ -2700,8 +3434,14 @@ class EditorialV3Executor:
         markdown_parts: list[str] = []
         html_parts: list[str] = []
         for block in draft.blocks:
-            md_texts = [rendered_sentence(item, html_mode=False) for item in block.content_sentences]
-            html_texts = [rendered_sentence(item, html_mode=True) for item in block.content_sentences]
+            md_texts = [
+                rendered_sentence(item, html_mode=False)
+                for item in block.content_sentences
+            ]
+            html_texts = [
+                rendered_sentence(item, html_mode=True)
+                for item in block.content_sentences
+            ]
             md_combined = " ".join(md_texts)
             html_combined = " ".join(html_texts)
             if block.type in {"h1", "h2", "h3"}:
@@ -2747,7 +3487,9 @@ class EditorialV3Executor:
                         + "".join(f"<th>{cell}</th>" for cell in html_header)
                         + "</tr></thead><tbody>"
                         + "".join(
-                            "<tr>" + "".join(f"<td>{cell}</td>" for cell in row) + "</tr>"
+                            "<tr>"
+                            + "".join(f"<td>{cell}</td>" for cell in row)
+                            + "</tr>"
                             for row in html_rows
                         )
                         + "</tbody></table>"
@@ -2761,14 +3503,20 @@ class EditorialV3Executor:
                     ]
                     column_count = max((len(row) for row in parsed_rows), default=0)
                     if column_count >= 2:
-                        rows = [row + [""] * (column_count - len(row)) for row in parsed_rows]
+                        rows = [
+                            row + [""] * (column_count - len(row))
+                            for row in parsed_rows
+                        ]
                         header, body_rows = rows[0], rows[1:]
                         markdown_parts.append(
                             "\n".join(
                                 [
                                     "| " + " | ".join(header) + " |",
                                     "| " + " | ".join(["---"] * column_count) + " |",
-                                    *["| " + " | ".join(row) + " |" for row in body_rows],
+                                    *[
+                                        "| " + " | ".join(row) + " |"
+                                        for row in body_rows
+                                    ],
                                 ]
                             )
                         )
@@ -2785,7 +3533,9 @@ class EditorialV3Executor:
                             + "".join(f"<th>{cell}</th>" for cell in html_header)
                             + "</tr></thead><tbody>"
                             + "".join(
-                                "<tr>" + "".join(f"<td>{cell}</td>" for cell in row) + "</tr>"
+                                "<tr>"
+                                + "".join(f"<td>{cell}</td>" for cell in row)
+                                + "</tr>"
                                 for row in html_body
                             )
                             + "</tbody></table>"
@@ -2817,8 +3567,7 @@ class EditorialV3Executor:
                 ]
                 quote_lines = [f"> {item}" for item in body_md_texts]
                 markdown_parts.append(
-                    (f"> **{label_md}**\n" if label_md else "")
-                    + "\n".join(quote_lines)
+                    (f"> **{label_md}**\n" if label_md else "") + "\n".join(quote_lines)
                 )
                 title_html = (
                     f'<strong class="editorial-callout-title">{label_html}</strong>'
@@ -2859,13 +3608,15 @@ class EditorialV3Executor:
             "meta_description": self._meta_description(draft),
             "slug": stable_slug(draft.title, separator="-", limit=120),
             "language": self.project.language,
-            "pipeline_contract_version": "editorial-v3.7",
-            "editorial_architecture": ContentKnowledgeContract.model_validate(state.contract).content_type.value,
+            "pipeline_contract_version": "editorial-v3.8",
+            "editorial_architecture": ContentKnowledgeContract.model_validate(
+                state.contract
+            ).content_type.value,
             "human_review_required": True,
         }
         source_report = {
             "generated_at": datetime.now(timezone.utc).isoformat(),
-            "pipeline_contract_version": "editorial-v3.7",
+            "pipeline_contract_version": "editorial-v3.8",
             "sources": sources,
             "source_document_count": len(sources),
             "distinct_source_count": len(
@@ -2876,7 +3627,9 @@ class EditorialV3Executor:
                 }
             ),
             "approved_claim_count": len(state.knowledge_claims),
-            "brief_compliance": state.brief_compliance_report or state.writer_diagnostics or {},
+            "brief_compliance": state.brief_compliance_report
+            or state.writer_diagnostics
+            or {},
             "editorial_intelligence": (
                 self.intelligence.summary(
                     ContentIntelligenceState.model_validate(state.intelligence_state)
@@ -2896,7 +3649,9 @@ class EditorialV3Executor:
                             "text": sentence.text,
                             "question_ids": list(sentence.question_ids),
                             "answer_status": sentence.answer_status,
-                            "fact_ids": [str(item.claim_id) for item in sentence.evidence],
+                            "fact_ids": [
+                                str(item.claim_id) for item in sentence.evidence
+                            ],
                             "source_numbers": sorted(
                                 {
                                     claim_to_source[item.claim_id]
@@ -2982,13 +3737,10 @@ class EditorialV3Executor:
         common = {
             "contract": contract,
             "sections": [
-                SectionDossier.model_validate(item)
-                for item in state.section_dossiers
+                SectionDossier.model_validate(item) for item in state.section_dossiers
             ],
             "draft": V3WriterOutput.model_validate(state.draft),
-            "development": V3DevelopmentReview.model_validate(
-                state.development_review
-            ),
+            "development": V3DevelopmentReview.model_validate(state.development_review),
             "fact_check": V3FactCheckReview.model_validate(state.fact_check),
             "language": V3LanguageReview.model_validate(state.language_review),
             "accepted_source_count": len(accepted_hosts),
@@ -2996,10 +3748,7 @@ class EditorialV3Executor:
             "minimum_word_count": minimum_word_count,
             "maximum_word_count": maximum_word_count,
         }
-        if (
-            contract.content_type
-            == EditorialContentTypeV3.procedural_decision_guide
-        ):
+        if contract.content_type == EditorialContentTypeV3.procedural_decision_guide:
             if not state.decision_matrix:
                 raise V3PipelineBlocked(
                     "Procedural quality requires a decision matrix",
@@ -3008,16 +3757,11 @@ class EditorialV3Executor:
             evaluation = self.quality.evaluate(
                 **common,
                 methods=[
-                    MethodDossier.model_validate(item)
-                    for item in state.method_dossiers
+                    MethodDossier.model_validate(item) for item in state.method_dossiers
                 ],
                 matrix=DecisionMatrix.model_validate(state.decision_matrix),
-                minimum_steps_per_method=int(
-                    self._flag("v3_min_steps_per_method")
-                ),
-            ).model_copy(
-                update={"architecture_type": contract.content_type.value}
-            )
+                minimum_steps_per_method=int(self._flag("v3_min_steps_per_method")),
+            ).model_copy(update={"architecture_type": contract.content_type.value})
         else:
             evaluation = self.universal_quality.evaluate(
                 **common,
@@ -3107,8 +3851,8 @@ class EditorialV3Executor:
         source_report = dict(package_data.get("source_report") or {})
         source_report["content_similarity"] = similarity_report
         if intelligence_report is not None:
-            source_report["editorial_intelligence_validation"] = intelligence_report.model_dump(
-                mode="json"
+            source_report["editorial_intelligence_validation"] = (
+                intelligence_report.model_dump(mode="json")
             )
         package_data["source_report"] = source_report
         state.final_package = package_data
@@ -3166,7 +3910,12 @@ class EditorialV3Executor:
                         "V3_QUALITY_INTELLIGENCE_BINDING_INVALID",
                     )
             package_data = dict(state.final_package or {})
-            required_package_keys = {"markdown", "html", "seo_metadata", "source_report"}
+            required_package_keys = {
+                "markdown",
+                "html",
+                "seo_metadata",
+                "source_report",
+            }
             if not required_package_keys.issubset(package_data):
                 raise V3PipelineBlocked(
                     "Quality gate passed without a complete final candidate package",
@@ -3176,10 +3925,13 @@ class EditorialV3Executor:
             article.final_html = str(package_data["html"])
             article.seo_metadata = dict(package_data["seo_metadata"])
             article.source_report = dict(package_data["source_report"])
-            article.content_fingerprint = str(
-                (state.content_similarity_report or {}).get("candidate_fingerprint")
-                or ""
-            ) or None
+            article.content_fingerprint = (
+                str(
+                    (state.content_similarity_report or {}).get("candidate_fingerprint")
+                    or ""
+                )
+                or None
+            )
             version.final_markdown = article.final_markdown
             version.final_html = article.final_html
             version.seo_metadata = article.seo_metadata
@@ -3311,7 +4063,9 @@ class EditorialV3Executor:
         ) -> int:
             task_question = persisted_plan.questions_by_task_id.get(task.task_id)
             if task_question is None:
-                record_failure(task, "research_question_missing", KeyError(task.task_id))
+                record_failure(
+                    task, "research_question_missing", KeyError(task.task_id)
+                )
                 return 0
             allowed_roles = set(node.required_evidence_roles)
             count = 0
@@ -3513,9 +4267,7 @@ class EditorialV3Executor:
                 candidates = build_targeted_gap_queries(contract, task, limit=3)
                 already = set(executed_queries_by_task.get(task.task_id, []))
                 fallback_by_task[task.task_id] = [
-                    query[:600]
-                    for query in candidates
-                    if query[:600] not in already
+                    query[:600] for query in candidates if query[:600] not in already
                 ]
             while remaining_slots > 0:
                 progressed = False
@@ -3570,9 +4322,7 @@ class EditorialV3Executor:
                 intent=intent,
                 task=task,
             )
-            failures.extend(
-                f"{task.task_id}:{exc.category}" for exc in result.failures
-            )
+            failures.extend(f"{task.task_id}:{exc.category}" for exc in result.failures)
             for attempt in result.attempts:
                 payload = attempt.as_payload()
                 payload["task_id"] = task.task_id
@@ -3692,19 +4442,15 @@ class EditorialV3Executor:
             "supplemental_search_attempts": supplemental_attempts[:120],
             "supplemental_providers_used": sorted(supplemental_providers),
             "supplemental_markets_used": sorted(supplemental_markets),
-            "supplemental_targeted_nodes": [
-                task.knowledge_node_id for task in missing
-            ],
+            "supplemental_targeted_nodes": [task.knowledge_node_id for task in missing],
             "source_fetch_count": fetch_count,
             "source_read_attempts_by_url": read_attempts,
             "processed_raw_source_urls": sorted(processed),
             "markets_by_task": {
-                key: sorted(value)
-                for key, value in global_markets_by_task.items()
+                key: sorted(value) for key, value in global_markets_by_task.items()
             },
             "languages_by_task": {
-                key: sorted(value)
-                for key, value in global_languages_by_task.items()
+                key: sorted(value) for key, value in global_languages_by_task.items()
             },
             "providers_used": sorted(global_providers),
             "search_diagnostic_totals": global_diagnostics,
@@ -3714,12 +4460,10 @@ class EditorialV3Executor:
         existing_document_by_url: dict[str, StructuredSourceDocument] = {}
         for payload in state.source_documents:
             document = StructuredSourceDocument.model_validate(payload)
-            existing_document_by_url[
-                canonicalize_url(str(document.url))
-            ] = document
-            existing_document_by_url[
-                canonicalize_url(str(document.canonical_url))
-            ] = document
+            existing_document_by_url[canonicalize_url(str(document.url))] = document
+            existing_document_by_url[canonicalize_url(str(document.canonical_url))] = (
+                document
+            )
         reassigned_documents = {
             existing_document_by_url[url].document_id: existing_document_by_url[url]
             for url, _task_id in newly_assigned_existing
@@ -3745,9 +4489,7 @@ class EditorialV3Executor:
             task.knowledge_node_id
             for task in missing
             if int(
-                after.get(task.knowledge_node_id, {}).get(
-                    "independent_source_count", 0
-                )
+                after.get(task.knowledge_node_id, {}).get("independent_source_count", 0)
             )
             < task.minimum_independent_sources
         ]
@@ -3799,7 +4541,9 @@ class EditorialV3Executor:
                     ),
                     "editorial_intelligence": (
                         self.intelligence.writer_payload(
-                            ContentIntelligenceState.model_validate(state.intelligence_state)
+                            ContentIntelligenceState.model_validate(
+                                state.intelligence_state
+                            )
                         )
                         if state.intelligence_state
                         else {}
@@ -3868,7 +4612,9 @@ class EditorialV3Executor:
                     ),
                     "editorial_intelligence": (
                         self.intelligence.writer_payload(
-                            ContentIntelligenceState.model_validate(state.intelligence_state)
+                            ContentIntelligenceState.model_validate(
+                                state.intelligence_state
+                            )
                         )
                         if state.intelligence_state
                         else {}
@@ -3938,7 +4684,10 @@ class EditorialV3Executor:
                     len(revised.table_rows),
                     tuple(len(row.cells) for row in revised.table_rows),
                 )
-                if original_structured != revised_structured or original_shape != revised_shape:
+                if (
+                    original_structured != revised_structured
+                    or original_shape != revised_shape
+                ):
                     raise V3PipelineBlocked(
                         f"{stage} revision changed protected table structure",
                         "V3_EDITOR_REVISION_TABLE_SHAPE_CHANGED",
@@ -3956,8 +4705,7 @@ class EditorialV3Executor:
                 for sentence in original.content_sentences
             }
             revised_sentences = {
-                sentence.sentence_id: sentence
-                for sentence in revised.content_sentences
+                sentence.sentence_id: sentence for sentence in revised.content_sentences
             }
             if set(original_sentences) != set(revised_sentences):
                 raise V3PipelineBlocked(
@@ -4029,7 +4777,9 @@ class EditorialV3Executor:
                     ),
                     "editorial_intelligence": (
                         self.intelligence.writer_payload(
-                            ContentIntelligenceState.model_validate(state.intelligence_state)
+                            ContentIntelligenceState.model_validate(
+                                state.intelligence_state
+                            )
                         )
                         if state.intelligence_state
                         else {}
@@ -4115,10 +4865,7 @@ class EditorialV3Executor:
         active_ids = set(active_node_ids(contract))
         active_nodes = [node for node in contract.nodes if node.node_id in active_ids]
         section_count = max(1, len(active_nodes))
-        if (
-            contract.content_type
-            == EditorialContentTypeV3.procedural_decision_guide
-        ):
+        if contract.content_type == EditorialContentTypeV3.procedural_decision_guide:
             method_count = len(state.method_dossiers)
             scope_minimum = procedural_structural_minimum_words(
                 method_count, section_count
@@ -4199,8 +4946,7 @@ class EditorialV3Executor:
         if report.status != "passed":
             raise V3PipelineBlocked(
                 "Draft failed Editorial Intelligence validation after "
-                f"{stage}: "
-                + ", ".join(item.code for item in report.blockers[:12]),
+                f"{stage}: " + ", ".join(item.code for item in report.blockers[:12]),
                 "V3_DRAFT_INTELLIGENCE_INVALID",
             )
 
@@ -4269,18 +5015,17 @@ class EditorialV3Executor:
             warnings.append({"code": code, "message": message, "details": details})
 
         text = " ".join(
-            sentence.text for block in draft.blocks for sentence in block.content_sentences
+            sentence.text
+            for block in draft.blocks
+            for sentence in block.content_sentences
         )
         markdown = _draft_markdown_for_analysis(draft)
         word_count = len(re.findall(r"\b\w+[\wÀ-ÿ'-]*\b", text))
         contract = ContentKnowledgeContract.model_validate(state.contract)
         is_procedural = (
-            contract.content_type
-            == EditorialContentTypeV3.procedural_decision_guide
+            contract.content_type == EditorialContentTypeV3.procedural_decision_guide
         )
-        methods = [
-            MethodDossier.model_validate(item) for item in state.method_dossiers
-        ]
+        methods = [MethodDossier.model_validate(item) for item in state.method_dossiers]
         h1_blocks = [block for block in draft.blocks if block.type == "h1"]
         if len(h1_blocks) != 1:
             add_blocker(
@@ -4289,7 +5034,9 @@ class EditorialV3Executor:
                 actual=len(h1_blocks),
                 required=1,
             )
-        elif normalized_text(h1_blocks[0].sentences[0].text) != normalized_text(draft.title):
+        elif normalized_text(h1_blocks[0].sentences[0].text) != normalized_text(
+            draft.title
+        ):
             add_blocker(
                 "DRAFT_H1_TITLE_MISMATCH",
                 "O H1 deve corresponder ao título editorial aprovado.",
@@ -4320,13 +5067,18 @@ class EditorialV3Executor:
         represented_positions = [
             section_first_positions[node.node_id]
             for node in contract.nodes
-            if node.node_id in required_sections and node.node_id in section_first_positions
+            if node.node_id in required_sections
+            and node.node_id in section_first_positions
         ]
         if represented_positions != sorted(represented_positions):
             add_blocker(
                 "DRAFT_SECTION_ORDER_INVALID",
                 "O rascunho não respeita a progressão editorial do contrato.",
-                expected_order=[node.node_id for node in contract.nodes if node.node_id in required_sections],
+                expected_order=[
+                    node.node_id
+                    for node in contract.nodes
+                    if node.node_id in required_sections
+                ],
                 first_positions=section_first_positions,
             )
         for node in contract.nodes:
@@ -4362,9 +5114,8 @@ class EditorialV3Executor:
                     word_count=words,
                     minimum_word_count=minimum_words,
                 )
-            if (
-                node.maximum_depth_weight is not None
-                and words > int(180 * node.maximum_depth_weight)
+            if node.maximum_depth_weight is not None and words > int(
+                180 * node.maximum_depth_weight
             ):
                 add_warning(
                     "DRAFT_NODE_ABOVE_DEPTH_TARGET",
@@ -4435,9 +5186,10 @@ class EditorialV3Executor:
                 "DRAFT_REPEATED_OPENERS",
                 "Muitas frases começam com a mesma construção.",
             )
-        if prose_quality["uniform_sentence_cadence"] or prose_quality[
-            "uniform_paragraph_shape"
-        ]:
+        if (
+            prose_quality["uniform_sentence_cadence"]
+            or prose_quality["uniform_paragraph_shape"]
+        ):
             add_warning(
                 "DRAFT_UNIFORM_CADENCE",
                 "A cadência ou o formato dos parágrafos está uniforme demais.",
@@ -4475,16 +5227,16 @@ class EditorialV3Executor:
             minimum_steps = int(self._flag("v3_min_steps_per_method"))
             for method in methods:
                 method_blocks = [
-                    block for block in draft.blocks if block.method_id == method.method_id
+                    block
+                    for block in draft.blocks
+                    if block.method_id == method.method_id
                 ]
                 method_text = " ".join(
                     sentence.text
                     for block in method_blocks
                     for sentence in block.content_sentences
                 )
-                method_words = len(
-                    re.findall(r"\b\w+[\wÀ-ÿ'-]*\b", method_text)
-                )
+                method_words = len(re.findall(r"\b\w+[\wÀ-ÿ'-]*\b", method_text))
                 heading_count = sum(
                     block.type in {"h2", "h3"} for block in method_blocks
                 )
@@ -4499,9 +5251,7 @@ class EditorialV3Executor:
                     if method.external_reference is not None
                     else ""
                 )
-                reference_present = bool(
-                    reference_url and reference_url in method_text
-                )
+                reference_present = bool(reference_url and reference_url in method_text)
                 per_method[method.method_id] = {
                     "name": method.name,
                     "block_count": len(method_blocks),
@@ -4619,7 +5369,9 @@ class EditorialV3Executor:
                     expected=requirement,
                 )
 
-        for example in (generation.get("brand") or {}).get("approved_style_examples") or []:
+        for example in (generation.get("brand") or {}).get(
+            "approved_style_examples"
+        ) or []:
             example_text = str(example).strip()
             if len(example_text) < 25:
                 continue
@@ -4663,7 +5415,10 @@ class EditorialV3Executor:
             for sentence in block.content_sentences
         ).casefold()
         for required in structure.get("required_sections") or []:
-            required_words = {item for item in re.findall(r"[a-zA-ZÀ-ÿ0-9]{3,}", str(required).casefold())}
+            required_words = {
+                item
+                for item in re.findall(r"[a-zA-ZÀ-ÿ0-9]{3,}", str(required).casefold())
+            }
             if required_words and not required_words.issubset(
                 set(re.findall(r"[a-zA-ZÀ-ÿ0-9]{3,}", heading_text))
             ):
@@ -4672,7 +5427,9 @@ class EditorialV3Executor:
                     f"A seção obrigatória '{required}' não foi localizada nos headings.",
                     required_section=required,
                 )
-        for forbidden in (generation.get("evidence_policy") or {}).get("claims_to_avoid") or []:
+        for forbidden in (generation.get("evidence_policy") or {}).get(
+            "claims_to_avoid"
+        ) or []:
             forbidden_norm = " ".join(str(forbidden).casefold().split())
             if forbidden_norm and forbidden_norm in " ".join(text.casefold().split()):
                 add_blocker(
@@ -4724,11 +5481,21 @@ class EditorialV3Executor:
         """Apply user-declared source exclusions and freshness limits after reading."""
 
         contract = ContentKnowledgeContract.model_validate(state.contract)
-        policy = (generation_brief(self.project, self.execution_manifest, contract).get("evidence_policy") or {})
+        policy = (
+            generation_brief(self.project, self.execution_manifest, contract).get(
+                "evidence_policy"
+            )
+            or {}
+        )
         url = canonicalize_url(str(document.canonical_url))
         host = (urlsplit(url).hostname or "").casefold().removeprefix("www.")
-        prohibited = [normalized_text(str(item)) for item in policy.get("prohibited_sources") or []]
-        preferred = [normalized_text(str(item)) for item in policy.get("preferred_sources") or []]
+        prohibited = [
+            normalized_text(str(item))
+            for item in policy.get("prohibited_sources") or []
+        ]
+        preferred = [
+            normalized_text(str(item)) for item in policy.get("preferred_sources") or []
+        ]
         url_norm = normalized_text(url)
         host_norm = normalized_text(host)
         reasons: list[str] = []
@@ -4747,11 +5514,15 @@ class EditorialV3Executor:
                     published = published.replace(tzinfo=timezone.utc)
                 if published < datetime.now(timezone.utc) - timedelta(days=maximum_age):
                     reasons.append("BRIEF_SOURCE_TOO_OLD")
-        if preferred and any(item and (item in url_norm or item in host_norm) for item in preferred):
+        if preferred and any(
+            item and (item in url_norm or item in host_norm) for item in preferred
+        ):
             warnings.append("BRIEF_PREFERRED_SOURCE_MATCH")
 
         if not reasons:
-            return document.model_copy(update={"warnings": list(dict.fromkeys(warnings))[:50]})
+            return document.model_copy(
+                update={"warnings": list(dict.fromkeys(warnings))[:50]}
+            )
         assessment = document.assessment.model_copy(
             update={
                 "usage_policy": SourceUsagePolicy.rejected,
@@ -4764,7 +5535,9 @@ class EditorialV3Executor:
                 "reason_codes": list(
                     dict.fromkeys([*document.assessment.reason_codes, *reasons])
                 )[:30],
-                "warnings": list(dict.fromkeys([*document.assessment.warnings, *warnings]))[:30],
+                "warnings": list(
+                    dict.fromkeys([*document.assessment.warnings, *warnings])
+                )[:30],
             }
         )
         return document.model_copy(
@@ -4775,7 +5548,11 @@ class EditorialV3Executor:
         )
 
     def _validate_draft_evidence(
-        self, draft: V3WriterOutput, state: V3PipelineState
+        self,
+        draft: V3WriterOutput,
+        state: V3PipelineState,
+        *,
+        require_complete_scope: bool = True,
     ) -> None:
         """Apply a deterministic evidence floor to every generated sentence.
 
@@ -4793,6 +5570,15 @@ class EditorialV3Executor:
         active_sections = set(
             active_node_ids(ContentKnowledgeContract.model_validate(state.contract))
         )
+        allowed_claims_by_section: dict[str, set[uuid.UUID]] = {}
+        if state.intelligence_state:
+            intelligence = ContentIntelligenceState.model_validate(
+                state.intelligence_state
+            )
+            allowed_claims_by_section = {
+                section.section_id: set(section.allowed_claim_ids)
+                for section in intelligence.sections
+            }
         violations: list[str] = []
 
         for block in draft.blocks:
@@ -4834,6 +5620,21 @@ class EditorialV3Executor:
                         )
                         continue
                     claims.append(claim)
+                    allowed_claims = allowed_claims_by_section.get(block.section_id)
+                    if (
+                        allowed_claims is not None
+                        and evidence.claim_id not in allowed_claims
+                    ):
+                        violations.append(
+                            "sentence uses a claim not authorized for section "
+                            f"{block.section_id}: {evidence.claim_id}"
+                        )
+                    claim_section = str(claim.get("knowledge_node_id") or "")
+                    if claim_section and claim_section != block.section_id:
+                        violations.append(
+                            "sentence uses a claim owned by another section "
+                            f"({claim_section} -> {block.section_id}): {evidence.claim_id}"
+                        )
                     support_group = normalized_text(
                         str(claim.get("support_group") or claim.get("claim_id") or "")
                     )
@@ -4877,14 +5678,15 @@ class EditorialV3Executor:
                         + ", ".join(irrelevant_claims)
                     )
 
-        required_sections = active_sections
         covered_sections = set(draft.covered_section_ids)
-        missing_sections = required_sections - covered_sections
-        unknown_sections = covered_sections - required_sections
-        if missing_sections:
-            violations.append(
-                "draft omits active sections: " + ", ".join(sorted(missing_sections))
-            )
+        unknown_sections = covered_sections - active_sections
+        if require_complete_scope:
+            missing_sections = active_sections - covered_sections
+            if missing_sections:
+                violations.append(
+                    "draft omits active sections: "
+                    + ", ".join(sorted(missing_sections))
+                )
         if unknown_sections:
             violations.append(
                 "draft references inactive or unknown sections: "
@@ -5013,6 +5815,7 @@ class EditorialV3Executor:
         removed_fragments = 0
         safe_sections: list[dict] = []
         for section in ranked:
+
             def safe_many(values, limit):
                 nonlocal removed_fragments
                 result = []
@@ -5117,7 +5920,10 @@ class EditorialV3Executor:
             # Prefer a complete, truthful fallback over cutting a factual sentence.
             result = draft.title.rstrip(".!?") + "."
         if len(result) > 160:
-            result = cls._truncate_at_word(draft.title.rstrip(".!?"), 158).rstrip(".!?") + "."
+            result = (
+                cls._truncate_at_word(draft.title.rstrip(".!?"), 158).rstrip(".!?")
+                + "."
+            )
         return result
 
     async def _stage(self, stage: str, message: str, state: V3PipelineState) -> None:
@@ -5137,11 +5943,63 @@ class EditorialV3Executor:
             self.pipeline_run.id,
             "stage.started",
             stage,
-            {"message": message, "pipeline_contract_version": "editorial-v3.7"},
+            {"message": message, "pipeline_contract_version": "editorial-v3.8"},
             idempotency_key=self._stage_context.event_key("stage.started"),
             context=self._stage_context,
         )
         await self.db.commit()
+
+    async def _progress_checkpoint(
+        self,
+        stage: str,
+        state: V3PipelineState,
+        *,
+        unit_id: str,
+        completed: int,
+        total: int,
+    ) -> None:
+        checkpoint = await self.checkpoints.save(
+            self.pipeline_run,
+            stage,
+            stage,
+            state.model_dump(mode="json"),
+            result={
+                "progress_unit_id": unit_id,
+                "completed": completed,
+                "total": total,
+                "pipeline_contract_version": "editorial-v3.8",
+            },
+            resumable=True,
+            event_context=self._stage_context,
+            idempotency_suffix=f"progress:{unit_id}",
+        )
+        context = (
+            self._stage_context.with_checkpoint(checkpoint.sequence)
+            if self._stage_context
+            else None
+        )
+        await self.runtime.event(
+            self.project.id,
+            self.pipeline_run.id,
+            "stage.progress",
+            stage,
+            {
+                "message": f"Informação {completed} de {total} concluída e salva",
+                "checkpoint_id": str(checkpoint.id),
+                "checkpoint_sequence": checkpoint.sequence,
+                "unit_id": unit_id,
+                "completed": completed,
+                "total": total,
+            },
+            idempotency_key=f"stage.progress:{stage}:{unit_id}",
+            context=context,
+        )
+        self.pipeline_run = await self.run_service.renew_lease(
+            self.pipeline_run.id,
+            self.lease_owner,
+        )
+        await self.db.commit()
+        await self._cancellation_boundary()
 
     async def _checkpoint(self, completed_stage: str, state: V3PipelineState) -> None:
         checkpoint = await self.checkpoints.save(
@@ -5152,7 +6010,7 @@ class EditorialV3Executor:
             result={
                 "blocking_reason": state.blocking_reason,
                 "blocking_code": state.blocking_code,
-                "pipeline_contract_version": "editorial-v3.7",
+                "pipeline_contract_version": "editorial-v3.8",
             },
             resumable=state.stage not in {V3Stage.blocked, V3Stage.completed},
             event_context=self._stage_context,
@@ -5191,6 +6049,12 @@ class EditorialV3Executor:
             or row.status == PipelineRunStatus.cancelled
         ):
             raise PipelineCancellationRequested("Pipeline cancellation requested")
+
+    def _optional_flag(self, name: str, default):
+        if self.execution_manifest is None:
+            return getattr(settings, name, default)
+        flags = self.execution_manifest.get("feature_flags") or {}
+        return flags.get(name, default)
 
     def _flag(self, name: str):
         if self.execution_manifest is None:

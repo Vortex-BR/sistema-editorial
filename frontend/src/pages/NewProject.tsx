@@ -9,7 +9,12 @@ import {
   Users,
 } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
-import { adminApi } from "../lib/api";
+import {
+  adminApi,
+  getReadiness,
+  readinessMessage,
+  type ReadinessReport,
+} from "../lib/api";
 import { CAMPAIGN_PRESETS } from "../lib/campaignPresets";
 import type { PublicationProfile } from "./PublicationProfiles";
 
@@ -105,6 +110,9 @@ export function NewProject() {
   const [profilesLoading, setProfilesLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [operationalReadiness, setOperationalReadiness] =
+    useState<ReadinessReport | null>(null);
+  const [readinessLoading, setReadinessLoading] = useState(true);
   const [selectedPresetId, setSelectedPresetId] = useState(
     CAMPAIGN_PRESETS[0]?.id || "",
   );
@@ -124,6 +132,26 @@ export function NewProject() {
       .catch((err) => setError((err as Error).message))
       .finally(() => setProfilesLoading(false));
   }, []);
+
+  useEffect(() => {
+    if (!form.start_immediately) {
+      setOperationalReadiness(null);
+      setReadinessLoading(false);
+      return;
+    }
+    let active = true;
+    setReadinessLoading(true);
+    const pipelineVersion =
+      form.editorial_pipeline_version === "v2" ? "v2" : "v3";
+    void getReadiness(pipelineVersion).then((report) => {
+      if (!active) return;
+      setOperationalReadiness(report);
+      setReadinessLoading(false);
+    });
+    return () => {
+      active = false;
+    };
+  }, [form.editorial_pipeline_version, form.start_immediately]);
 
   const update = (key: keyof FormState, value: string | boolean) => {
     submissionIdentity.current = null;
@@ -196,6 +224,14 @@ export function NewProject() {
           throw new Error(
             `Dependências da execução incompletas: ${preflight.dependencies.join(", ")}`,
           );
+        }
+        const pipelineVersion =
+          form.editorial_pipeline_version === "v2" ? "v2" : "v3";
+        const readiness = await getReadiness(pipelineVersion);
+        setOperationalReadiness(readiness);
+        setReadinessLoading(false);
+        if (readiness.status !== "ready") {
+          throw new Error(readinessMessage(readiness));
         }
       }
       const payload = {
@@ -908,6 +944,21 @@ export function NewProject() {
             <span>Marca, leitor e objetivo em um só texto</span>
           </div>
         </section>
+        {form.start_immediately && readinessLoading && (
+          <div className="notice">Verificando a prontidão operacional...</div>
+        )}
+        {form.start_immediately &&
+          !readinessLoading &&
+          operationalReadiness &&
+          operationalReadiness.status !== "ready" && (
+            <div className="notice warning" role="status">
+              <span>
+                {readinessMessage(operationalReadiness)} Abra a{" "}
+                <Link to="/config">Configuração</Link> para corrigir os bloqueios ou
+                desmarque o início automático para salvar apenas o projeto.
+              </span>
+            </div>
+          )}
         {error && <div className="notice error">{error}</div>}
         <div className="form-actions">
           <label className="check">

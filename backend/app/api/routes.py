@@ -5,6 +5,7 @@ import re
 import uuid
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
+from typing import Literal
 import httpx
 from fastapi import (
     APIRouter,
@@ -86,7 +87,7 @@ from app.schemas.api import (
     V3KnowledgeContractPreviewRead,
     V3KnowledgeContractRead,
 )
-from app.core.config import settings
+from app.core.config import Settings, settings
 from app.core.sanitization import sanitize_nul
 from app.core.errors import redact_sensitive, safe_public_message, safe_public_payload
 from app.services.agent_context import AgentContextComposer
@@ -156,6 +157,16 @@ WEBSOCKET_SUBSCRIBE_TIMEOUT_SECONDS = 10
 
 AGENT_ROLES = tuple(sorted(ALL_AGENT_ROLES))
 PROVIDER_STANDARD_TOKEN_RATES = _PROVIDER_STANDARD_TOKEN_RATES
+
+
+def _runtime_settings(request: Request) -> Settings:
+    """Use the settings bound to the current FastAPI app.
+
+    Tests and alternate app instances may intentionally use a Settings object that
+    differs from the module-level singleton. Readiness and run gates must evaluate
+    the same configuration that initialized that app.
+    """
+    return getattr(request.app.state, "runtime_settings", settings)
 
 
 def _default_route_for_provider(provider: str, role: str) -> dict[str, object]:
@@ -494,12 +505,19 @@ async def health():
 
 
 @router.get("/readiness")
-async def readiness(request: Request, db: AsyncSession = Depends(get_db)):
+async def readiness(
+    request: Request,
+    pipeline_version: Literal["v2", "v3"] | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    runtime_settings = _runtime_settings(request)
     report = await readiness_report(
         db,
         preflight_complete=getattr(
             request.app.state, "production_preflight_complete", False
         ),
+        config=runtime_settings,
+        pipeline_version=pipeline_version,
     )
     return JSONResponse(
         status_code=status.HTTP_200_OK
@@ -516,13 +534,15 @@ async def _require_run_start_readiness(
     *,
     existing_manifest: bool = False,
 ) -> None:
-    if not settings.is_production:
+    runtime_settings = _runtime_settings(request)
+    if not runtime_settings.is_production:
         return
     report = await readiness_report(
         db,
         preflight_complete=getattr(
             request.app.state, "production_preflight_complete", False
         ),
+        config=runtime_settings,
         pipeline_version=pipeline_version,
         require_execution_dependencies=not existing_manifest,
     )
@@ -763,10 +783,11 @@ async def create_project(
     db: AsyncSession = Depends(get_db),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ):
+    runtime_settings = _runtime_settings(request)
     if (
         payload.start_immediately
         and payload.editorial_pipeline_version == "v3"
-        and not settings.editorial_pipeline_v3_execution_enabled
+        and not runtime_settings.editorial_pipeline_v3_execution_enabled
     ):
         raise HTTPException(
             409,
@@ -1113,9 +1134,10 @@ async def start_project(
         "value",
         getattr(project, "editorial_pipeline_version", "v2"),
     )
+    runtime_settings = _runtime_settings(request)
     if (
         project_pipeline == "v3"
-        and not settings.editorial_pipeline_v3_execution_enabled
+        and not runtime_settings.editorial_pipeline_v3_execution_enabled
     ):
         raise HTTPException(
             409,

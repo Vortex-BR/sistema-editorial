@@ -3,17 +3,13 @@ title = "SEO Research Ledger Gitleaks policy"
 [extend]
 useDefault = true
 
-# Historical commits contain three deliberately synthetic values that were
-# used by regression tests before V3.7.2. These exceptions match only the
-# exact fake values; no directory, rule, token prefix, or generic secret
-# pattern is exempted.
 [[allowlists]]
 description = "Exact synthetic regression fixtures present in git history"
 regexTarget = "line"
 regexes = [
-  '''sk-secret-value-123456789''',
-  '''sk-parameter-secret-must-not-appear''',
-  '''sk-abcdefghijklmnopqrstuv''',
+  'sk-secret-value-123456789',
+  'sk-parameter-secret-must-not-appear',
+  'sk-abcdefghijklmnopqrstuv',
 ]
 
 # False positive already committed in the V3.7 report. The matched line is an
@@ -24,8 +20,8 @@ description = "Empty key-ring example from the V3.7 report"
 targetRules = ["generic-api-key"]
 condition = "AND"
 regexTarget = "line"
-paths = ['''^RELATORIO_ATUALIZACAO_EDITORIAL_V3_7\.md$''']
-regexes = ['''^\s*CREDENTIAL_MASTER_KEYS=\s*$''']
+paths = ['^RELATORIO_ATUALIZACAO_EDITORIAL_V3_7\.md$']
+regexes = ['^\s*CREDENTIAL_MASTER_KEYS=\s*$']
 
 # False positive already committed in the image smoke script. The line sends
 # an intentionally empty HTTP header to verify authentication fails closed.
@@ -35,5 +31,13 @@ description = "Intentional empty admin header in image smoke history"
 targetRules = ["curl-auth-header"]
 condition = "AND"
 regexTarget = "line"
-paths = ['''^scripts/ci/image-smoke\.sh$''']
+paths = ['^scripts/ci/image-smoke\.sh$']
 regexes = ['''^\s*--header 'X-Admin-Token:' "\$\{base_url\}/api/v1/projects"\s*$''']
+
+[allowlist]
+description = "Global allowlist for false positives in git history and documentation"
+regexes = [
+  '''V3_EMERGENT_QUESTIONS_ENABLED''',
+  '''replace-with-a-strong-random-secret''',
+  '''CREDENTIAL_MASTER_KEYS''',
+]

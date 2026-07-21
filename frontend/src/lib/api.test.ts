@@ -4,6 +4,8 @@ import {
   adminApi,
   api,
   clearAdminToken,
+  getReadiness,
+  readinessMessage,
   safePublicMessage,
   safeDownloadFilename,
   setAdminTokenRequester,
@@ -56,6 +58,46 @@ describe('safePublicMessage', () => {
       error_code:'EDITORIAL_V3_EXECUTION_DISABLED',
       message:'A execução V3 está desabilitada.',
     })).toBe('A execução V3 está desabilitada. Código: EDITORIAL_V3_EXECUTION_DISABLED.')
+  })
+
+
+  it('turns readiness components into actionable Portuguese blockers', () => {
+    expect(safePublicMessage({
+      error_code:'SYSTEM_NOT_READY',
+      message:'Novos runs estão pausados até a prontidão operacional.',
+      components:{
+        postgresql:{status:'ready'},
+        worker:{status:'missing'},
+        beat:{status:'stale'},
+      },
+    })).toBe(
+      'Novos runs estão pausados até a prontidão operacional. Bloqueios: worker: ausente, agendador: heartbeat expirado. Código: SYSTEM_NOT_READY.',
+    )
+  })
+})
+
+describe('operational readiness', () => {
+  it('accepts the expected 503 response as a readable not-ready report', async () => {
+    const fetchMock=vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      status:'not_ready',
+      components:{worker:{status:'missing'},beat:{status:'ready'}},
+    }),{status:503}))
+    vi.stubGlobal('fetch',fetchMock)
+
+    const report=await getReadiness('v3')
+
+    expect(report.status).toBe('not_ready')
+    expect(fetchMock.mock.calls[0][0]).toContain('/readiness?pipeline_version=v3')
+    expect(readinessMessage(report)).toContain('worker: ausente')
+  })
+
+  it('returns a safe unavailable state when the readiness request fails', async () => {
+    vi.stubGlobal('fetch',vi.fn().mockRejectedValue(new Error('network details')))
+
+    await expect(getReadiness()).resolves.toEqual({
+      status:'unavailable',
+      components:{api:{status:'unavailable'}},
+    })
   })
 })
 

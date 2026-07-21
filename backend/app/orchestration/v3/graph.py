@@ -34,13 +34,33 @@ class V3PipelineNodes:
 
 
 class EditorialIntelligenceV3Graph:
-    def __init__(self, nodes: V3PipelineNodes, after_transition: TransitionHook | None = None):
+    def __init__(
+        self,
+        nodes: V3PipelineNodes,
+        after_transition: TransitionHook | None = None,
+        *,
+        max_transitions: int = 96,
+    ):
+        if max_transitions < 1:
+            raise ValueError("max_transitions must be positive")
         self.nodes = nodes
         self.after_transition = after_transition
+        self.max_transitions = max_transitions
 
     async def run(self, state: V3PipelineState) -> V3PipelineState:
         while state.stage not in {V3Stage.completed, V3Stage.blocked}:
-            completed_stage = state.stage.value
+            if state.graph_transition_count >= self.max_transitions:
+                state = self._block(
+                    state,
+                    "The V3 graph exceeded its maximum transition count without reaching a terminal state",
+                    code="V3_GRAPH_TRANSITION_LIMIT_EXCEEDED",
+                )
+                if self.after_transition is not None:
+                    await self.after_transition("graph_guard", state)
+                break
+
+            expected_stage = state.stage
+            completed_stage = expected_stage.value
             node = getattr(self.nodes, completed_stage, None)
             if node is None:
                 # Compatibility for V3.1–V3.4 test graphs and resumable manifests.
@@ -49,10 +69,33 @@ class EditorialIntelligenceV3Graph:
                 elif state.stage == V3Stage.targeted_source_recovery:
                     state.source_recovery_exhausted = True
                 else:
-                    raise RuntimeError(f"No node configured for V3 stage {completed_stage}")
+                    state = self._block(
+                        state,
+                        f"No node is configured for V3 stage {completed_stage}",
+                        code="V3_GRAPH_NODE_MISSING",
+                    )
             else:
-                state = await node(state)
-            state = self._transition(state)
+                next_state = await node(state)
+                if not isinstance(next_state, V3PipelineState):
+                    state = self._block(
+                        state,
+                        f"V3 stage {completed_stage} returned an invalid state object",
+                        code="V3_GRAPH_INVALID_STATE",
+                    )
+                else:
+                    state = next_state
+
+            if state.stage == V3Stage.blocked:
+                pass
+            elif state.stage != expected_stage:
+                state = self._block(
+                    state,
+                    f"V3 stage {completed_stage} mutated the graph stage before transition validation",
+                    code="V3_GRAPH_STAGE_MUTATION",
+                )
+            else:
+                state = self._transition(state)
+            state.graph_transition_count += 1
             if self.after_transition is not None:
                 await self.after_transition(completed_stage, state)
         return state
@@ -130,11 +173,9 @@ class EditorialIntelligenceV3Graph:
                     ),
                 )
         elif state.stage == V3Stage.targeted_source_recovery:
-            intelligence_mode = (
-                (state.research_metrics or {}).get("last_recovery_mode")
-                == "intelligence"
-                or bool(state.intelligence_recovery_tasks)
-            )
+            intelligence_mode = (state.research_metrics or {}).get(
+                "last_recovery_mode"
+            ) == "intelligence" or bool(state.intelligence_recovery_tasks)
             exhausted = (
                 state.intelligence_recovery_exhausted
                 if intelligence_mode

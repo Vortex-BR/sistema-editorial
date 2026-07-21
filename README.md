@@ -2,6 +2,8 @@
 
 Sistema self-hosted de pesquisa e redação SEO com rastreabilidade por sentença. O redator só recebe fatos aprovados pelo auditor de pesquisa e o artigo final é bloqueado quando qualquer afirmação factual não possui evidência aprovada.
 
+> **Atualização V3.8 — Geração incremental e retomada segura:** o Writer agora produz e valida uma seção por vez, cria checkpoint após cada unidade concluída, retoma sem repetir seções persistidas, monta o artigo de forma determinística e bloqueia loops, mutações indevidas de estágio e checkpoints incompatíveis. Sem migration nova; o head permanece `0036`. Consulte `CHANGELOG_EDITORIAL_V3_8.md`, `VALIDATION_EDITORIAL_V3_8.md`, `RELATORIO_AUDITORIA_PONTA_A_PONTA_V3_8_2026-07-21.md` e `docs/EDITORIAL_V3_8_INCREMENTAL_GENERATION.md`.
+
 > **Atualização V3.7.4 — Research Coverage & Synthesis Recovery:** corrige falsos gaps por papel de fonte e associação exclusiva à consulta original, alinha diversidade ao nível de importância do nó, impede síntese com cobertura incompleta e isola `TypeError` por documento para preservar claims válidos. Sem migration nova; o head permanece `0036`. Consulte `CHANGELOG_EDITORIAL_V3_7_4.md`, `IMPLEMENTATION_REPORT_V3_7_4.md`, `VALIDATION_EDITORIAL_V3_7_4.md` e `docs/EDITORIAL_V3_7_4_RESEARCH_SYNTHESIS_RECOVERY.md`.
 
 > **Atualização V3.7 — Release Hardening & Emergent Intelligence:** corrige a divergência de migration no CI, constrói/testa/publica a mesma imagem sem rebuild, adiciona auditorias de dependências, secrets, Trivy e SBOM, implementa rotação MultiFernet do cofre, restringe CORS sem quebrar `Idempotency-Key`, adiciona CSP em Report-Only e permite perguntas emergentes pós-pesquisa com validação determinística. A migration head permanece `0036`. Consulte `CHANGELOG_EDITORIAL_V3_7.md`, `IMPLEMENTATION_REPORT_V3_7.md`, `VALIDATION_EDITORIAL_V3_7.md` e `docs/EDITORIAL_V3_7_RELEASE_HARDENING.md`.
@@ -68,6 +70,9 @@ PROVIDER_READ_TIMEOUT_SECONDS=90
 V3_MIN_CLAIMS_PER_METHOD=3
 V3_MIN_STEPS_PER_METHOD=3
 V3_WRITER_REPAIR_ATTEMPTS=1
+V3_WRITER_SECTION_REPAIR_ATTEMPTS=1
+V3_INCREMENTAL_WRITER_ENABLED=true
+V3_GRAPH_MAX_TRANSITIONS=96
 V3_EMERGENT_QUESTIONS_ENABLED=true
 V3_MAX_EMERGENT_QUESTIONS=6
 V3_MAX_SEARCH_PROVIDER_REQUESTS=96
@@ -132,8 +137,11 @@ permanece embutido, mantenha permanentemente `App replicas = 1`.
 
 `GET /api/v1/health` é liveness público e confirma apenas que o processo HTTP
 está vivo. `GET /api/v1/readiness` é o gate operacional para receber tráfego e
-trabalho: valida PostgreSQL, head Alembic, pgvector, Redis, broker, pré-voo,
-modo enforced em produção e heartbeats recentes de Worker e Beat. Os
+trabalho; use `?pipeline_version=v2` ou `?pipeline_version=v3` para diagnosticar
+a versão que será iniciada. A interface consulta esse endpoint periodicamente e
+nunca exibe estado saudável fixo. A readiness valida PostgreSQL, head Alembic,
+pgvector, Redis, broker, pré-voo, modo enforced em produção e heartbeats recentes
+de Worker e Beat. Os
 heartbeats ficam no Redis com TTL; não usam polling frequente no PostgreSQL. A
 resposta expõe somente nomes genéricos de componentes e estados seguros, sem
 URLs, hosts, tokens ou credenciais.

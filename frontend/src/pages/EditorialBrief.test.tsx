@@ -3,12 +3,16 @@ import {cleanup, fireEvent, render, screen, waitFor} from '@testing-library/reac
 import userEvent from '@testing-library/user-event'
 import {MemoryRouter} from 'react-router-dom'
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
-import {adminApi} from '../lib/api'
+import {adminApi, getReadiness} from '../lib/api'
 import {NewProject} from './NewProject'
 import {PublicationProfiles} from './PublicationProfiles'
 
-vi.mock('../lib/api',()=>({adminApi:vi.fn()}))
+vi.mock('../lib/api',async importOriginal=>{
+  const actual=await importOriginal<typeof import('../lib/api')>()
+  return {...actual,adminApi:vi.fn(),getReadiness:vi.fn()}
+})
 const mockAdminApi=vi.mocked(adminApi)
+const mockGetReadiness=vi.mocked(getReadiness)
 
 const profile={
   id:'profile-1',
@@ -41,6 +45,7 @@ const profile={
 
 beforeEach(()=>{
   vi.clearAllMocks()
+  mockGetReadiness.mockResolvedValue({status:'ready',components:{}})
   mockAdminApi.mockImplementation(async path=>{
     if(path==='/publication-profiles') return [profile] as never
     if(path.startsWith('/config/execution-preflight')) return {pipeline_version:'v3',status:'ready',dependencies:[],repairs:[]} as never
@@ -199,6 +204,39 @@ describe('editorial profiles and brief',()=>{
     await userEvent.click(screen.getByRole('button',{name:/Criar e iniciar V3/}))
 
     expect(await screen.findByText(/model_route:fact_checker/)).toBeTruthy()
+    expect(mockAdminApi).not.toHaveBeenCalledWith('/projects',expect.anything())
+  })
+
+  it('shows the real operational blockers and does not create a run while readiness is down',async()=>{
+    const msbProfile={
+      ...profile,
+      id:'profile-msb',
+      name:'MSB Blog — Maconha Seeds Bank',
+      brand_name:'Maconha Seeds Bank',
+    }
+    mockGetReadiness.mockResolvedValue({
+      status:'not_ready',
+      components:{
+        postgresql:{status:'ready'},
+        worker:{status:'missing'},
+        beat:{status:'stale'},
+      },
+    })
+    mockAdminApi.mockImplementation(async path=>{
+      if(path==='/publication-profiles') return [msbProfile] as never
+      if(path.startsWith('/config/execution-preflight')) return {
+        pipeline_version:'v3',status:'ready',dependencies:[],repairs:[],
+      } as never
+      throw new Error(`unexpected request: ${path}`)
+    })
+    render(<MemoryRouter><NewProject/></MemoryRouter>)
+    await screen.findByLabelText('Perfil editorial')
+    await userEvent.click(screen.getByRole('button',{name:'Aplicar campanha'}))
+
+    expect(await screen.findByText(/worker: ausente/)).toBeTruthy()
+    await userEvent.click(screen.getByRole('button',{name:/Criar e iniciar V3/}))
+
+    await waitFor(()=>expect(mockGetReadiness).toHaveBeenCalledWith('v3'))
     expect(mockAdminApi).not.toHaveBeenCalledWith('/projects',expect.anything())
   })
 

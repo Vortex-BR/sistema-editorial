@@ -1,7 +1,7 @@
 from enum import Enum
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class V3Stage(str, Enum):
@@ -60,6 +60,11 @@ class V3PipelineState(BaseModel):
     external_references: dict[str, dict] = Field(default_factory=dict)
     completeness_report: dict | None = None
     draft: dict | None = None
+    writer_sections: dict[str, dict] = Field(default_factory=dict)
+    writer_completed_section_ids: list[str] = Field(default_factory=list)
+    writer_section_repair_counts: dict[str, int] = Field(default_factory=dict)
+    writer_progress: dict = Field(default_factory=dict)
+    graph_transition_count: int = Field(default=0, ge=0)
     writer_diagnostics: dict | None = None
     context_budget_report: dict | None = None
     brief_compliance_report: dict | None = None
@@ -75,3 +80,89 @@ class V3PipelineState(BaseModel):
     human_review_package_id: UUID | None = None
     blocking_reason: str | None = None
     blocking_code: str | None = None
+
+    @model_validator(mode="after")
+    def validate_resumable_writer_progress(self):
+        completed = self.writer_completed_section_ids
+        if len(completed) != len(set(completed)):
+            raise ValueError("Writer completed section IDs must be unique")
+        missing = [
+            section_id
+            for section_id in completed
+            if section_id not in self.writer_sections
+        ]
+        if missing:
+            raise ValueError(
+                "Writer completed sections are missing persisted unit payloads: "
+                + ", ".join(missing)
+            )
+        orphaned = sorted(set(self.writer_sections) - set(completed))
+        if orphaned:
+            raise ValueError(
+                "Writer unit payloads are not marked as completed: "
+                + ", ".join(orphaned)
+            )
+        if any(count < 0 for count in self.writer_section_repair_counts.values()):
+            raise ValueError("Writer section repair counts cannot be negative")
+        return self
+
+    def resume_invariant_errors(
+        self, *, project_id: UUID, pipeline_run_id: UUID
+    ) -> list[str]:
+        errors: list[str] = []
+        if self.project_id != project_id:
+            errors.append("checkpoint project_id does not match the current project")
+        if self.pipeline_run_id != pipeline_run_id:
+            errors.append("checkpoint pipeline_run_id does not match the current run")
+
+        post_contract = {
+            V3Stage.knowledge_architect,
+            V3Stage.knowledge_gate,
+            V3Stage.intelligence_planner,
+            V3Stage.research_planner,
+            V3Stage.source_discovery,
+            V3Stage.source_reader,
+            V3Stage.source_coverage_gate,
+            V3Stage.targeted_source_recovery,
+            V3Stage.knowledge_synthesizer,
+            V3Stage.evidence_graph_builder,
+            V3Stage.intelligence_gate,
+            V3Stage.knowledge_completeness_gate,
+            V3Stage.writer,
+            V3Stage.development_editor,
+            V3Stage.fact_checker,
+            V3Stage.language_editor,
+            V3Stage.external_reference_gate,
+            V3Stage.finalizer,
+            V3Stage.quality_gate,
+            V3Stage.completed,
+        }
+        if self.stage in post_contract and not self.contract:
+            errors.append(
+                f"stage {self.stage.value} requires a persisted content contract"
+            )
+
+        writer_or_later = {
+            V3Stage.writer,
+            V3Stage.development_editor,
+            V3Stage.fact_checker,
+            V3Stage.language_editor,
+            V3Stage.external_reference_gate,
+            V3Stage.finalizer,
+            V3Stage.quality_gate,
+            V3Stage.completed,
+        }
+        if self.stage in writer_or_later:
+            if (self.completeness_report or {}).get("status") != "passed":
+                errors.append(
+                    f"stage {self.stage.value} requires a passed completeness gate"
+                )
+            if not self.intelligence_state:
+                errors.append(
+                    f"stage {self.stage.value} requires canonical editorial intelligence"
+                )
+
+        after_writer = writer_or_later - {V3Stage.writer}
+        if self.stage in after_writer and not self.draft:
+            errors.append(f"stage {self.stage.value} requires a persisted draft")
+        return errors

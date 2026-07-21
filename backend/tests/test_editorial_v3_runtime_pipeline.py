@@ -287,6 +287,8 @@ def test_v3_execution_manifest_pins_every_paid_output_contract():
         "method_inventory",
         "knowledge_synthesis",
         "writer",
+        "writer_section",
+        "writer_section_repair",
         "development_editor",
         "fact_checker",
         "language_editor",

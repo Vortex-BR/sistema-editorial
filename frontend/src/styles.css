@@ -42,3 +42,17 @@
 .execution-preflight p{margin:0;color:var(--muted)}
 .dependency-list{margin:12px 0 0;padding-left:20px;color:#9b2c2c;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.85rem}
 @media (max-width:760px){.campaign-preset-panel{grid-template-columns:1fr}.campaign-preset-actions,.execution-preflight{flex-direction:column;align-items:stretch}.execution-preflight .button{width:100%}}
+
+/* Operational readiness states */
+.system-pill-checking i,.health-checking>span{background:#8a95a2;box-shadow:none}
+.system-pill-ready i,.health-ready>span{background:#22b478}
+.system-pill-not-ready{color:#956000;background:var(--amber-soft);border-color:#efdfb9}
+.system-pill-not-ready i,.health-not-ready>span{background:#d28a16}
+.system-pill-unavailable{color:var(--red);background:#feeceb;border-color:#facac6}
+.system-pill-unavailable i,.health-unavailable>span{background:var(--red)}
+.health-not-ready>span{box-shadow:0 0 0 5px rgba(210,138,22,.16)}
+.health-unavailable>span{box-shadow:0 0 0 5px rgba(180,35,24,.16)}
+.health-checking>span{box-shadow:0 0 0 5px rgba(138,149,162,.14)}
+.health small{max-width:190px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.notice.warning{background:var(--amber-soft);color:#805600;border:1px solid #efdfb9;align-items:flex-start}
+.notice.warning a{text-decoration:underline;font-weight:700}

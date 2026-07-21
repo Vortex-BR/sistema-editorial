@@ -292,22 +292,29 @@ class AgentRuntime:
         fallback_provider = normalized_route["fallback_provider"]
         fallback_model = normalized_route["fallback_model"]
         route_parameters = normalized_route["parameters"]
+        completion_budget_hint: int | None = None
         if task_data is not None:
             configured_output_budget = int(
                 route_parameters.get("max_output_tokens", 2048) or 2048
             )
-            if output_schema.__name__ == "V3WriterOutput":
+            if output_schema.__name__ in {"V3WriterOutput", "V3WriterSectionOutput"}:
                 target_range = task_data.get("target_word_range") or []
                 if isinstance(target_range, (list, tuple)) and len(target_range) == 2:
                     maximum_words = max(0, int(target_range[1] or 0))
                     # Structured JSON, block metadata and evidence IDs require more
-                    # tokens than the visible article alone. Fail before a paid call
-                    # instead of accepting a provider-truncated document.
-                    minimum_output_budget = max(4096, int(maximum_words * 3.2) + 1800)
+                    # tokens than the visible prose. Section units need less fixed
+                    # overhead than a complete article but still require a safe floor.
+                    section_output = output_schema.__name__ == "V3WriterSectionOutput"
+                    minimum_output_budget = max(
+                        2048 if section_output else 4096,
+                        int(maximum_words * 3.2) + (1000 if section_output else 1800),
+                    )
+                    completion_budget_hint = minimum_output_budget
                     if configured_output_budget < minimum_output_budget:
+                        scope = "section" if section_output else "article"
                         raise AgentConfigurationError(
                             "Writer route output budget is too small for the requested "
-                            f"article range ({configured_output_budget} < {minimum_output_budget} tokens)"
+                            f"{scope} range ({configured_output_budget} < {minimum_output_budget} tokens)"
                         )
             elif output_schema.__name__ == "V3FactCheckReview":
                 factual_count = _count_factual_sentences(task_data)
@@ -476,6 +483,10 @@ class AgentRuntime:
             estimated_completion_tokens = int(
                 target_parameters.get("max_output_tokens", 2048) or 2048
             )
+            if completion_budget_hint is not None:
+                estimated_completion_tokens = min(
+                    estimated_completion_tokens, completion_budget_hint
+                )
             projected = self._token_cost(
                 route_parameters,
                 estimated_prompt_tokens,
@@ -638,7 +649,7 @@ class AgentRuntime:
                     "provider": result.provider,
                     "model": result.model,
                 },
-                idempotency_key=f"agent.completed:{run_id}",
+                idempotency_key=f"agent.completed:{run_id}:{run.attempt}",
                 context=event_context.with_agent(run_id) if event_context else None,
             )
             await self.db.commit()
