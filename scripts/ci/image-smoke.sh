@@ -530,6 +530,7 @@ fi
 printf 'LIVENESS: 200\n'
 printf 'READINESS: 200 with all components ready\n'
 
+admin_token_header="X-Admin-Token"
 for token_case in missing empty placeholder; do
   case "${token_case}" in
     missing)
@@ -541,7 +542,7 @@ for token_case in missing empty placeholder; do
     empty)
       protected_status="$(
         curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
-          --header 'X-Admin-Token:' "${base_url}/api/v1/projects"
+          --header "${admin_token_header}:" "${base_url}/api/v1/projects"
       )"
       ;;
     placeholder)

@@ -1,6 +1,10 @@
 # Status da Editorial Intelligence V3
 
-Data: 20/07/2026
+Data: 21/07/2026
+
+## Atualização V3.7.4 — Research Coverage & Synthesis Recovery
+
+A V3.7.4 corrige a execução que alcançava a síntese com falsos gaps de diversidade/papel de fonte e podia perder todo o Fact Ledger após um `TypeError`. Papéis equivalentes passam a ser avaliados por capacidade, fontes profundas podem sustentar outros nós semanticamente compatíveis, nós de apoio exigem uma fonte enquanto nós core preservam duas, e a extração falha por documento sem apagar claims válidos. A síntese continua proibida quando a cobertura atual não passou. Não existe migration nova; o head permanece `0036`.
 
 ## Atualização V3.6.3 — Briefing Simplification & Manifest Safety Fix
 

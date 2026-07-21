@@ -111,6 +111,7 @@ from app.services.editorial_v3.research_intent import CanonicalResearchIntent
 from app.services.editorial_v3.search_acceptance import (
     CandidateAcceptanceService,
     SourceCoverageService,
+    expand_source_task_map,
 )
 from app.services.editorial_v3.text_integrity import (
     claim_supports_sentence,
@@ -929,7 +930,14 @@ class EditorialV3Executor:
                 existing[str(structured.document_id)] = structured
 
         structured_documents = list(existing.values())
-        state.source_task_map = updated_task_map
+        plan = V3ResearchPlan.model_validate(state.research_plan)
+        expanded_task_map, cross_task_assignments = expand_source_task_map(
+            tasks=plan.tasks,
+            documents=structured_documents,
+            source_task_map=updated_task_map,
+            minimum_score=float(self._flag("v3_min_candidate_relevance")),
+        )
+        state.source_task_map = expanded_task_map
         state.source_documents = [item.model_dump(mode="json") for item in structured_documents]
         state.research_metrics = {
             **state.research_metrics,
@@ -941,6 +949,8 @@ class EditorialV3Executor:
                 *read_failures,
             ][-100:],
             "structured_source_count": len(structured_documents),
+            "cross_task_assignment_count": len(cross_task_assignments),
+            "cross_task_assignments": cross_task_assignments[:200],
         }
         accepted = sum(
             item.assessment.usage_policy
@@ -958,6 +968,7 @@ class EditorialV3Executor:
                 "source_fetch_count": fetch_count,
                 "maximum_source_fetches": maximum_fetches,
                 "read_failures": read_failures[:30],
+                "cross_task_assignment_count": len(cross_task_assignments),
             },
             idempotency_key=f"v3.sources.read.v35:{state.source_recovery_round}",
             context=self._stage_context,
@@ -1332,6 +1343,16 @@ class EditorialV3Executor:
             == EditorialContentTypeV3.procedural_decision_guide
         )
         plan = V3ResearchPlan.model_validate(state.research_plan)
+        coverage_report = dict(state.source_coverage_report or {})
+        if coverage_report and coverage_report.get("status") != "passed":
+            raise V3PipelineBlocked(
+                "A síntese foi impedida porque a cobertura de fontes ainda está incompleta.",
+                str(
+                    coverage_report.get("suggested_blocking_code")
+                    or state.blocking_code
+                    or "V3_RESEARCH_COVERAGE_INCOMPLETE"
+                ),
+            )
         documents = [
             StructuredSourceDocument.model_validate(item)
             for item in state.source_documents
@@ -1352,8 +1373,29 @@ class EditorialV3Executor:
             persisted_plan=persisted_plan,
         )
         claims = await self.artifacts.knowledge_claims(approved_only=True)
+        minimum_approved_claims = int(self._flag("v3_min_approved_claims"))
+        failed_task_ids = set(
+            state.research_metrics.get("claim_extraction_failed_task_ids") or []
+        )
+        if len(claims) < minimum_approved_claims and failed_task_ids:
+            retry_tasks = [
+                task for task in plan.tasks if task.task_id in failed_task_ids
+            ]
+            if retry_tasks:
+                await self._extract_claims_for_tasks(
+                    state=state,
+                    contract=contract,
+                    tasks=retry_tasks,
+                    documents=[
+                        StructuredSourceDocument.model_validate(item)
+                        for item in state.source_documents
+                    ],
+                    persisted_plan=persisted_plan,
+                )
+                await self.artifacts.approve_claim_bundles()
+                claims = await self.artifacts.knowledge_claims(approved_only=True)
         state.knowledge_claims = [item.model_dump(mode="json") for item in claims]
-        if len(claims) < int(self._flag("v3_min_approved_claims")):
+        if len(claims) < minimum_approved_claims:
             first_node = next(
                 (node.node_id for node in contract.nodes if node.research_required),
                 contract.nodes[0].node_id,
@@ -1365,13 +1407,19 @@ class EditorialV3Executor:
                     if is_procedural
                     else "overbroad_question",
                     "description": (
-                        "A pesquisa não produziu evidências independentes suficientes "
-                        "para desenvolver o contrato editorial com segurança."
+                        "A pesquisa concluiu a leitura, mas não alcançou a quantidade "
+                        "mínima de claims aprovados para materializar os dossiês."
                     ),
                     "essential": True,
                     "status": "open",
                 }
             ]
+            state.blocking_code = "V3_APPROVED_CLAIMS_INSUFFICIENT"
+            state.blocking_reason = (
+                f"Claims aprovados: {len(claims)} de {minimum_approved_claims}. "
+                "A execução foi encerrada de forma controlada, sem tratar a ausência "
+                "de evidência como falha técnica."
+            )
             return state
 
         claim_key_map = {str(item.claim_id): item for item in claims}
@@ -3182,7 +3230,15 @@ class EditorialV3Executor:
         persisted_plan,
         only_document_ids: set[uuid.UUID] | None = None,
     ) -> int:
-        """Extract verifiable claims for a bounded task/document set."""
+        """Extract verifiable claims without letting one malformed batch abort the run.
+
+        Production showed a bare ``TypeError`` in the synthesizer after sources
+        had already passed the coverage gate. The previous implementation put
+        every document for a task into one call and allowed any Python type
+        error in that batch or one candidate to roll back the whole stage. The
+        guarded path below retries a failed batch per document, records a safe
+        diagnostic and preserves claims from the remaining tasks.
+        """
 
         existing_groups = list(
             await self.db.scalars(
@@ -3193,11 +3249,147 @@ class EditorialV3Executor:
         )
         nodes = {node.node_id: node for node in contract.nodes}
         persisted_count = 0
+        failures = list(state.research_metrics.get("claim_extraction_failures") or [])
+        failed_task_ids: set[str] = set(
+            state.research_metrics.get("claim_extraction_failed_task_ids") or []
+        )
+        source_rows: dict[uuid.UUID, V3SourceDocumentRecord | None] = {}
+
+        def record_failure(task: ResearchTask, phase: str, error: Exception) -> None:
+            failed_task_ids.add(task.task_id)
+            failures.append(
+                {
+                    "task_id": task.task_id,
+                    "knowledge_node_id": task.knowledge_node_id,
+                    "phase": phase,
+                    "error_type": type(error).__name__,
+                }
+            )
+
+        async def extract_batch(
+            task: ResearchTask,
+            node,
+            batch: list[StructuredSourceDocument],
+            *,
+            key_suffix: str,
+            attempt: int,
+        ) -> KnowledgeClaimExtractionOutput:
+            output = await self._agent_call(
+                role="researcher",
+                key=f"claim_extraction:{task.task_id}:{key_suffix}",
+                attempt=attempt,
+                input_json={
+                    "task": task.model_dump(mode="json"),
+                    "required_evidence_roles": [
+                        role.value for role in node.required_evidence_roles
+                    ],
+                    "known_support_groups": existing_groups[-150:],
+                    "documents": [
+                        self._document_for_agent(item, task.research_goal)
+                        for item in batch
+                    ],
+                },
+                prompt=(
+                    "Você é o pesquisador factual da Editorial Intelligence V3. Extraia somente afirmações "
+                    "literalmente sustentadas pelos documentos. exact_quote deve ser um trecho exato. Reúna "
+                    "afirmações semanticamente equivalentes de fontes independentes no mesmo support_group. "
+                    "Não transforme blog de e-commerce em verdade: conteúdo comparison_only só pode registrar "
+                    "comparação, limitação ou erro relatado e nunca sustenta conclusão absoluta. Não invente "
+                    "abordagem, parâmetro, autoria, URL ou causalidade. Use conditional quando a resposta depender "
+                    f"de contexto. Tarefa: {task.research_goal}"
+                ),
+                output_schema=KnowledgeClaimExtractionOutput,
+            )
+            return KnowledgeClaimExtractionOutput.model_validate(output)
+
+        async def persist_extraction(
+            task: ResearchTask,
+            node,
+            batch: list[StructuredSourceDocument],
+            extraction: KnowledgeClaimExtractionOutput,
+        ) -> int:
+            task_question = persisted_plan.questions_by_task_id.get(task.task_id)
+            if task_question is None:
+                record_failure(task, "research_question_missing", KeyError(task.task_id))
+                return 0
+            allowed_roles = set(node.required_evidence_roles)
+            count = 0
+            for candidate in extraction.claims:
+                try:
+                    if allowed_roles and candidate.evidence_role not in allowed_roles:
+                        continue
+                    candidate_url = canonicalize_url(str(candidate.source_url))
+                    document = next(
+                        (
+                            item
+                            for item in batch
+                            if candidate_url
+                            in {
+                                canonicalize_url(str(item.url)),
+                                canonicalize_url(str(item.canonical_url)),
+                            }
+                        ),
+                        None,
+                    )
+                    if document is None:
+                        continue
+                    if document.document_id not in source_rows:
+                        source_rows[document.document_id] = await self.db.scalar(
+                            select(V3SourceDocumentRecord).where(
+                                V3SourceDocumentRecord.pipeline_run_id
+                                == self.pipeline_run.id,
+                                V3SourceDocumentRecord.id == document.document_id,
+                            )
+                        )
+                    source_row = source_rows[document.document_id]
+                    if source_row is None:
+                        continue
+                    source = SearchDocument(
+                        url=canonicalize_url(str(document.canonical_url)),
+                        title=str(document.title),
+                        content=str(document.plain_text),
+                        publisher=(
+                            str(document.publisher) if document.publisher else None
+                        ),
+                        source_type=str(document.assessment.source_role.value),
+                        reliability_score=float(document.assessment.priority_score),
+                        accessed_at=document.accessed_at,
+                        author=str(document.author) if document.author else None,
+                        published_at=document.published_at,
+                        extraction_method="v3_structured_reader",
+                    )
+                    suffix = uuid.uuid5(uuid.NAMESPACE_URL, source.url).hex[:8]
+                    normalized = candidate.model_copy(
+                        update={
+                            "claim_key": f"{_slug(str(candidate.claim_key), 105)}_{suffix}",
+                            "support_group": _slug(str(candidate.support_group), 119),
+                            "source_url": source.url,
+                            "knowledge_node_id": task.knowledge_node_id,
+                            "critical": bool(task.critical),
+                        }
+                    )
+                    row = await self.artifacts.claim(
+                        contract_id=state.contract_id,
+                        candidate=normalized,
+                        task_question=task_question,
+                        source=source,
+                        structured=document,
+                        source_row=source_row,
+                    )
+                    if row is not None:
+                        count += 1
+                        existing_groups.append(normalized.support_group)
+                except TypeError as exc:
+                    # A malformed candidate must not erase valid claims already
+                    # extracted for other documents or knowledge nodes.
+                    record_failure(task, "candidate_persistence", exc)
+                    continue
+            return count
+
         for task in tasks:
             node = nodes.get(task.knowledge_node_id)
             if node is None:
                 continue
-            allowed_roles = set(node.required_evidence_roles)
             task_documents = [
                 document
                 for document in documents
@@ -3213,91 +3405,45 @@ class EditorialV3Executor:
             ][: int(self._flag("v3_max_documents_per_research_task"))]
             if not task_documents:
                 continue
-            output = await self._agent_call(
-                role="researcher",
-                key=f"claim_extraction:{task.task_id}",
-                attempt=1 if only_document_ids is None else 2,
-                input_json={
-                    "task": task.model_dump(mode="json"),
-                    "required_evidence_roles": [
-                        role.value for role in node.required_evidence_roles
-                    ],
-                    "known_support_groups": existing_groups[-150:],
-                    "documents": [
-                        self._document_for_agent(item, task.research_goal) for item in task_documents
-                    ],
-                },
-                prompt=(
-                    "Você é o pesquisador factual da Editorial Intelligence V3. Extraia somente afirmações "
-                    "literalmente sustentadas pelos documentos. exact_quote deve ser um trecho exato. Reúna "
-                    "afirmações semanticamente equivalentes de fontes independentes no mesmo support_group. "
-                    "Não transforme blog de e-commerce em verdade: conteúdo comparison_only só pode registrar "
-                    "comparação, limitação ou erro relatado e nunca sustenta conclusão absoluta. Não invente "
-                    "abordagem, parâmetro, autoria, URL ou causalidade. Use conditional quando a resposta depender "
-                    f"de contexto. Tarefa: {task.research_goal}"
-                ),
-                output_schema=KnowledgeClaimExtractionOutput,
-            )
-            extraction = KnowledgeClaimExtractionOutput.model_validate(output)
-            for candidate in extraction.claims:
-                if allowed_roles and candidate.evidence_role not in allowed_roles:
-                    continue
-                candidate_url = canonicalize_url(str(candidate.source_url))
-                document = next(
-                    (
-                        item
-                        for item in task_documents
-                        if candidate_url
-                        in {
-                            canonicalize_url(str(item.url)),
-                            canonicalize_url(str(item.canonical_url)),
-                        }
-                    ),
-                    None,
+            base_attempt = 1 if only_document_ids is None else 2
+            try:
+                extraction = await extract_batch(
+                    task,
+                    node,
+                    task_documents,
+                    key_suffix="batch",
+                    attempt=base_attempt,
                 )
-                if document is None:
-                    continue
-                source_row = await self.db.scalar(
-                    select(V3SourceDocumentRecord).where(
-                        V3SourceDocumentRecord.pipeline_run_id == self.pipeline_run.id,
-                        V3SourceDocumentRecord.id == document.document_id,
+            except TypeError as exc:
+                record_failure(task, "batch", exc)
+                # Isolate the source that triggers the type mismatch and retain
+                # evidence from every other readable document.
+                for index, document in enumerate(task_documents, start=1):
+                    try:
+                        extraction = await extract_batch(
+                            task,
+                            node,
+                            [document],
+                            key_suffix=f"document_{document.document_id.hex[:12]}",
+                            attempt=base_attempt + index,
+                        )
+                    except TypeError as isolated_exc:
+                        record_failure(task, "isolated_document", isolated_exc)
+                        continue
+                    persisted_count += await persist_extraction(
+                        task, node, [document], extraction
                     )
+            else:
+                persisted_count += await persist_extraction(
+                    task, node, task_documents, extraction
                 )
-                if source_row is None:
-                    continue
-                source = SearchDocument(
-                    url=canonicalize_url(str(document.canonical_url)),
-                    title=document.title,
-                    content=document.plain_text,
-                    publisher=document.publisher,
-                    source_type=document.assessment.source_role.value,
-                    reliability_score=document.assessment.priority_score,
-                    accessed_at=document.accessed_at,
-                    author=document.author,
-                    published_at=document.published_at,
-                    extraction_method="v3_structured_reader",
-                )
-                suffix = uuid.uuid5(uuid.NAMESPACE_URL, source.url).hex[:8]
-                normalized = candidate.model_copy(
-                    update={
-                        "claim_key": f"{_slug(candidate.claim_key, 105)}_{suffix}",
-                        "support_group": _slug(candidate.support_group, 119),
-                        "source_url": source.url,
-                        "knowledge_node_id": task.knowledge_node_id,
-                        "critical": task.critical,
-                    }
-                )
-                row = await self.artifacts.claim(
-                    contract_id=state.contract_id,
-                    candidate=normalized,
-                    task_question=persisted_plan.questions_by_task_id[task.task_id],
-                    source=source,
-                    structured=document,
-                    source_row=source_row,
-                )
-                if row is not None:
-                    persisted_count += 1
-                    existing_groups.append(normalized.support_group)
+
+        state.research_metrics = {
+            **state.research_metrics,
+            "claim_extraction_persisted_count": persisted_count,
+            "claim_extraction_failures": failures[-100:],
+            "claim_extraction_failed_task_ids": sorted(failed_task_ids),
+        }
         return persisted_count
 
     async def _search_credentials(self) -> list[tuple[str, str]]:

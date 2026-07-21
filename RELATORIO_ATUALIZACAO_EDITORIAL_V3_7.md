@@ -85,11 +85,9 @@ Execução:
 
 ## Novas variáveis opcionais
 
-```env
-CREDENTIAL_MASTER_KEYS=
-V3_EMERGENT_QUESTIONS_ENABLED=true
-V3_MAX_EMERGENT_QUESTIONS=6
-```
+- `CREDENTIAL_MASTER_KEYS`: lista opcional de chaves, da primária para as antigas.
+- `V3_EMERGENT_QUESTIONS_ENABLED=true`
+- `V3_MAX_EMERGENT_QUESTIONS=6`
 
 Para continuar usando uma única chave, `CREDENTIAL_MASTER_KEY` permanece suficiente. Não altere a chave atual sem seguir o procedimento de rotação documentado.
 

@@ -2,6 +2,8 @@
 
 Sistema self-hosted de pesquisa e redação SEO com rastreabilidade por sentença. O redator só recebe fatos aprovados pelo auditor de pesquisa e o artigo final é bloqueado quando qualquer afirmação factual não possui evidência aprovada.
 
+> **Atualização V3.7.4 — Research Coverage & Synthesis Recovery:** corrige falsos gaps por papel de fonte e associação exclusiva à consulta original, alinha diversidade ao nível de importância do nó, impede síntese com cobertura incompleta e isola `TypeError` por documento para preservar claims válidos. Sem migration nova; o head permanece `0036`. Consulte `CHANGELOG_EDITORIAL_V3_7_4.md`, `IMPLEMENTATION_REPORT_V3_7_4.md`, `VALIDATION_EDITORIAL_V3_7_4.md` e `docs/EDITORIAL_V3_7_4_RESEARCH_SYNTHESIS_RECOVERY.md`.
+
 > **Atualização V3.7 — Release Hardening & Emergent Intelligence:** corrige a divergência de migration no CI, constrói/testa/publica a mesma imagem sem rebuild, adiciona auditorias de dependências, secrets, Trivy e SBOM, implementa rotação MultiFernet do cofre, restringe CORS sem quebrar `Idempotency-Key`, adiciona CSP em Report-Only e permite perguntas emergentes pós-pesquisa com validação determinística. A migration head permanece `0036`. Consulte `CHANGELOG_EDITORIAL_V3_7.md`, `IMPLEMENTATION_REPORT_V3_7.md`, `VALIDATION_EDITORIAL_V3_7.md` e `docs/EDITORIAL_V3_7_RELEASE_HARDENING.md`.
 
 > **Base preservada:** a V3.6.3 continua responsável pela simplificação do briefing e correção do manifesto; a V3.6.2 mantém criação transacional, idempotência e retry durável; a V3.6.1 mantém a integridade pergunta → claim → frase → fonte.

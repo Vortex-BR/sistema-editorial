@@ -4,10 +4,9 @@ title = "SEO Research Ledger Gitleaks policy"
 useDefault = true
 
 # Historical commits contain three deliberately synthetic values that were
-# used by regression tests before V3.7.2. Gitleaks scans git history, so merely
-# rewriting the current fixtures would not remove those old findings. These
-# exceptions match only the three exact fake values; no directory, rule, token
-# prefix, or generic secret pattern is exempted.
+# used by regression tests before V3.7.2. These exceptions match only the
+# exact fake values; no directory, rule, token prefix, or generic secret
+# pattern is exempted.
 [[allowlists]]
 description = "Exact synthetic regression fixtures present in git history"
 regexTarget = "line"
@@ -16,3 +15,25 @@ regexes = [
   '''sk-parameter-secret-must-not-appear''',
   '''sk-abcdefghijklmnopqrstuv''',
 ]
+
+# False positive already committed in the V3.7 report. The matched line is an
+# empty environment-variable example, not a credential. All three conditions
+# must match, so this does not allow generic API keys elsewhere.
+[[allowlists]]
+description = "Empty key-ring example from the V3.7 report"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+paths = ['''^RELATORIO_ATUALIZACAO_EDITORIAL_V3_7\.md$''']
+regexes = ['''^\s*CREDENTIAL_MASTER_KEYS=\s*$''']
+
+# False positive already committed in the image smoke script. The line sends
+# an intentionally empty HTTP header to verify authentication fails closed.
+# It is restricted by rule, exact file and exact harmless line shape.
+[[allowlists]]
+description = "Intentional empty admin header in image smoke history"
+targetRules = ["curl-auth-header"]
+condition = "AND"
+regexTarget = "line"
+paths = ['''^scripts/ci/image-smoke\.sh$''']
+regexes = ['''^\s*--header 'X-Admin-Token:' "\$\{base_url\}/api/v1/projects"\s*$''']

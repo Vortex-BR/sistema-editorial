@@ -178,7 +178,11 @@ class EditorialIntelligenceV3Graph:
                 state.stage = V3Stage.targeted_source_recovery
         elif state.stage == V3Stage.knowledge_synthesizer:
             if not state.section_dossiers:
-                return self._block(state, "Knowledge synthesis produced no dossiers")
+                return self._block(
+                    state,
+                    state.blocking_reason or "Knowledge synthesis produced no dossiers",
+                    code=state.blocking_code or "V3_KNOWLEDGE_SYNTHESIS_EMPTY",
+                )
             state.stage = (
                 V3Stage.evidence_graph_builder
                 if self.nodes.evidence_graph_builder is not None

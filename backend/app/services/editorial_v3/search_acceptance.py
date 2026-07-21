@@ -30,6 +30,64 @@ _ROLE_TYPE_COMPATIBILITY: dict[str, set[str]] = {
     "independent_editorial": {"news", "practical"},
 }
 
+# Source roles are capabilities, not mutually exclusive labels. A scientific
+# primary source can satisfy a request for scientific support even when the
+# planner named ``scientific_review`` as the preferred role; likewise a deep
+# specialist guide can satisfy a procedural role. Exact string equality caused
+# false ``required_source_roles_missing`` blockers in production.
+_ROLE_COMPATIBILITY: dict[str, set[str]] = {
+    "scientific_primary": {
+        "scientific_primary", "scientific_review", "academic_repository",
+        "scientific_database", "institutional",
+    },
+    "scientific_review": {
+        "scientific_review", "scientific_primary", "academic_repository",
+        "scientific_database", "institutional",
+    },
+    "academic_repository": {
+        "academic_repository", "scientific_primary", "scientific_review",
+        "scientific_database", "institutional",
+    },
+    "scientific_database": {
+        "scientific_database", "scientific_primary", "scientific_review",
+        "academic_repository",
+    },
+    "institutional": {
+        "institutional", "scientific_primary", "scientific_review",
+        "academic_repository", "scientific_database",
+    },
+    "technical_procedural": {
+        "technical_procedural", "specialist_practical", "institutional",
+        "scientific_primary", "scientific_review",
+    },
+    "specialist_practical": {
+        "specialist_practical", "technical_procedural", "institutional",
+    },
+    "independent_editorial": {
+        "independent_editorial", "specialist_practical",
+        "technical_procedural", "news_reporting", "encyclopedic_discovery",
+    },
+}
+
+
+def source_role_satisfies(required_role: str, found_role: str) -> bool:
+    required = str(required_role or "").strip()
+    found = str(found_role or "").strip()
+    if not required or not found:
+        return False
+    return found in _ROLE_COMPATIBILITY.get(required, {required})
+
+
+def matched_required_source_roles(
+    required_roles: Iterable[str], found_roles: Iterable[str]
+) -> set[str]:
+    found = {str(item) for item in found_roles if str(item).strip()}
+    return {
+        str(required)
+        for required in required_roles
+        if any(source_role_satisfies(str(required), candidate) for candidate in found)
+    }
+
 
 def _fold(value: str) -> str:
     normalized = unicodedata.normalize("NFKD", value.casefold())
@@ -150,6 +208,116 @@ class CandidateAcceptanceService:
         )
 
 
+def expand_source_task_map(
+    *,
+    tasks: Iterable[ResearchTask],
+    documents: Iterable[StructuredSourceDocument],
+    source_task_map: dict[str, list[str]],
+    minimum_score: float = 0.16,
+    maximum_new_tasks_per_document: int = 5,
+) -> tuple[dict[str, list[str]], list[dict[str, Any]]]:
+    """Attach a readable source to every task it materially supports.
+
+    Search providers associate a result only with the query that discovered it.
+    A single technical document often answers several neighboring knowledge
+    nodes, so keeping that one-query mapping produced false coverage gaps even
+    after the source had been fetched and classified. This deterministic pass
+    uses role compatibility, allowed evidence roles and weighted lexical
+    relevance to add only defensible cross-task assignments.
+    """
+
+    task_list = list(tasks)
+    document_list = list(documents)
+    result: dict[str, set[str]] = {
+        canonicalize_url(str(url)): {str(item) for item in task_ids}
+        for url, task_ids in source_task_map.items()
+    }
+    task_tokens = {
+        task.task_id: _tokens(
+            " ".join([task.research_goal, *task.queries, task.knowledge_node_id])
+        )
+        for task in task_list
+    }
+    token_frequency: dict[str, int] = {}
+    for values in task_tokens.values():
+        for token in values:
+            token_frequency[token] = token_frequency.get(token, 0) + 1
+
+    assignments: list[dict[str, Any]] = []
+    threshold = max(0.08, min(0.6, float(minimum_score)))
+    max_assignments = max(1, int(maximum_new_tasks_per_document))
+
+    for document in document_list:
+        assessment = document.assessment
+        if assessment.usage_policy not in {
+            SourceUsagePolicy.authoritative_evidence,
+            SourceUsagePolicy.corroborating_evidence,
+        }:
+            continue
+        found_role = assessment.source_role.value
+        allowed_roles = set(assessment.allowed_evidence_roles)
+        body_tokens = _tokens(f"{document.title} {document.plain_text[:30000]}")
+        title_tokens = _tokens(document.title)
+        if not body_tokens:
+            continue
+
+        ranked: list[tuple[float, ResearchTask]] = []
+        for task in task_list:
+            if task.evidence_role not in allowed_roles:
+                continue
+            if task.required_source_roles and not any(
+                source_role_satisfies(required, found_role)
+                for required in task.required_source_roles
+            ):
+                continue
+            tokens_for_task = task_tokens.get(task.task_id, set())
+            if not tokens_for_task:
+                continue
+            # Rare task terms carry more weight than subject words repeated in
+            # every node. This avoids assigning every source to every task merely
+            # because all queries mention the same topic.
+            weighted_total = sum(
+                1.0 / max(1, token_frequency.get(token, 1))
+                for token in tokens_for_task
+            )
+            weighted_overlap = sum(
+                1.0 / max(1, token_frequency.get(token, 1))
+                for token in tokens_for_task & body_tokens
+            )
+            coverage = weighted_overlap / max(1e-9, weighted_total)
+            title_overlap = len(tokens_for_task & title_tokens) / max(
+                1, min(len(tokens_for_task), 10)
+            )
+            score = min(1.0, coverage * 0.82 + title_overlap * 0.18)
+            if score >= threshold:
+                ranked.append((score, task))
+
+        ranked.sort(key=lambda item: (-item[0], not item[1].critical, item[1].task_id))
+        for score, task in ranked[:max_assignments]:
+            keys = {
+                canonicalize_url(str(document.url)),
+                canonicalize_url(str(document.canonical_url)),
+            }
+            already_assigned = any(task.task_id in result.get(key, set()) for key in keys)
+            for key in keys:
+                result.setdefault(key, set()).add(task.task_id)
+            if not already_assigned:
+                assignments.append(
+                    {
+                        "document_id": str(document.document_id),
+                        "task_id": task.task_id,
+                        "knowledge_node_id": task.knowledge_node_id,
+                        "score": round(score, 4),
+                        "source_role": found_role,
+                    }
+                )
+
+    return (
+        {key: sorted(values) for key, values in result.items()},
+        assignments,
+    )
+
+
 @dataclass(frozen=True)
 class TaskCoverage:
     task_id: str
@@ -241,7 +409,8 @@ class SourceCoverageService:
                 item.assessment.source_role.value for item in accepted
             }
             requested_roles = set(task.required_source_roles)
-            missing_roles = sorted(requested_roles - found_roles)
+            matched_roles = matched_required_source_roles(requested_roles, found_roles)
+            missing_roles = sorted(requested_roles - matched_roles)
             reasons: list[str] = []
             if not assigned:
                 reasons.append("no_readable_source_for_task")
@@ -275,7 +444,7 @@ class SourceCoverageService:
                 reasons.append("authoritative_source_missing")
             # Do not require every desirable role; one represented role plus
             # diversity is sufficient. The missing list remains diagnostic.
-            if requested_roles and not (requested_roles & found_roles):
+            if requested_roles and not matched_roles:
                 reasons.append("required_source_roles_missing")
             status = "passed" if not reasons else "incomplete"
             all_reasons.update(reasons)

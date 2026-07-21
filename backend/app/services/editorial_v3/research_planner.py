@@ -292,7 +292,15 @@ class V3ResearchPlanningService:
                 research_goal=goal,
                 queries=list(dict.fromkeys(queries))[:6],
                 required_source_roles=_source_roles_for(primary_role),
-                minimum_independent_sources=(2 if node.kind.value not in {"external_references"} else 1),
+                # Two independent sources are mandatory for core nodes. Supporting
+                # nodes may proceed with one eligible source; the previous blanket
+                # requirement of two contradicted the documented stop condition and
+                # blocked otherwise complete runs on peripheral sections.
+                minimum_independent_sources=(
+                    1
+                    if node.kind.value == "external_references" or node.importance.value != "core"
+                    else 2
+                ),
                 critical=node.importance.value == "core",
                 rationale=(
                     f"Este nó leva o leitor de '{node.reader_state_before}' para "
