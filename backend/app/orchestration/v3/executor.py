@@ -1365,12 +1365,13 @@ class EditorialV3Executor:
             documents=documents,
             persisted_plan=persisted_plan,
         )
-        await self.artifacts.approve_claim_bundles()
+        await self.artifacts.approve_claim_bundles(procedural_context=is_procedural)
         await self._supplement_research(
             state=state,
             contract=contract,
             plan=plan,
             persisted_plan=persisted_plan,
+            is_procedural=is_procedural,
         )
         claims = await self.artifacts.knowledge_claims(approved_only=True)
         minimum_approved_claims = int(self._flag("v3_min_approved_claims"))
@@ -1392,7 +1393,7 @@ class EditorialV3Executor:
                     ],
                     persisted_plan=persisted_plan,
                 )
-                await self.artifacts.approve_claim_bundles()
+                await self.artifacts.approve_claim_bundles(procedural_context=is_procedural)
                 claims = await self.artifacts.knowledge_claims(approved_only=True)
         state.knowledge_claims = [item.model_dump(mode="json") for item in claims]
         if len(claims) < minimum_approved_claims:
@@ -3459,6 +3460,7 @@ class EditorialV3Executor:
         contract: ContentKnowledgeContract,
         plan: V3ResearchPlan,
         persisted_plan,
+        is_procedural: bool = False,
     ) -> None:
         """Execute the reserved query budget against under-covered nodes.
 
@@ -3736,7 +3738,7 @@ class EditorialV3Executor:
                 persisted_plan=persisted_plan,
                 only_document_ids=set(extraction_documents),
             )
-            await self.artifacts.approve_claim_bundles()
+            await self.artifacts.approve_claim_bundles(procedural_context=is_procedural)
 
         after = await self.artifacts.approved_coverage_by_node()
         unresolved = [

@@ -187,6 +187,7 @@ class ResearchSourcePolicyService:
         absolute_claim: bool = False,
         comparison_context: bool = False,
         external_reference: bool = False,
+        procedural_context: bool = False,
     ) -> EvidenceBundleDecision:
         blockers: list[str] = []
         warnings: list[str] = []
@@ -247,9 +248,19 @@ class ResearchSourcePolicyService:
                 "Critical claims require at least two independent noncommercial sources"
             )
         if not comparison_context and assessments and not authoritative:
-            blockers.append(
-                "A factual claim requires at least one authoritative scientific, institutional, or qualified technical source"
+            procedural_corroboration = (
+                procedural_context
+                and not absolute_claim
+                and len(independent) >= self.policy.procedural_min_independent_corroborators
             )
+            if not procedural_corroboration:
+                blockers.append(
+                    "A factual claim requires at least one authoritative scientific, institutional, or qualified technical source"
+                )
+            else:
+                warnings.append(
+                    "Authoritative source absent; claim accepted via procedural corroboration with multiple independent sources"
+                )
 
         for commercial in comparison_only:
             if len(independent) < commercial.minimum_independent_corroborators:

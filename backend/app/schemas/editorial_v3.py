@@ -186,6 +186,7 @@ class ResearchSourcePolicyContract(V3StrictModel):
     ecommerce_blog_can_support_absolute_claim: Literal[False] = False
     ecommerce_blog_can_be_external_reference: Literal[False] = False
     critical_claim_min_independent_sources: int = Field(default=2, ge=2, le=5)
+    procedural_min_independent_corroborators: int = Field(default=2, ge=2, le=5)
     prioritized_source_roles: list[SourceRole] = Field(
         default_factory=lambda: [
             SourceRole.scientific_primary,

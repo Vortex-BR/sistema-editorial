@@ -382,3 +382,149 @@ async def test_claim_extraction_isolates_batch_type_error_and_preserves_other_do
             "error_type": "TypeError",
         }
     ]
+
+
+def _corroborating_assessment(url: str, *, host_suffix: str = "") -> SourceAssessment:
+    """Build a corroborating (non-authoritative) independent source assessment."""
+    return SourceAssessment(
+        url=url,
+        ownership_type=SourceOwnershipType.independent_editorial,
+        page_type=SourcePageType.technical_guide,
+        source_role=SourceRole.technical_procedural,
+        usage_policy=SourceUsagePolicy.corroborating_evidence,
+        priority_score=0.78,
+        eligible_for_primary_evidence=False,
+        eligible_for_corroborating_evidence=True,
+        eligible_for_external_reference=True,
+        counts_toward_independent_source_diversity=True,
+        requires_independent_corroboration=False,
+        minimum_independent_corroborators=0,
+        absolute_claim_support_allowed=False,
+        allowed_evidence_roles=list(EvidenceRole),
+        reason_codes=["classified_as_technical_procedural", "usage_corroborating_evidence"],
+    )
+
+
+def _authoritative_assessment(url: str) -> SourceAssessment:
+    """Build an authoritative scientific source assessment."""
+    return SourceAssessment(
+        url=url,
+        ownership_type=SourceOwnershipType.academic,
+        page_type=SourcePageType.research_article,
+        source_role=SourceRole.scientific_primary,
+        usage_policy=SourceUsagePolicy.authoritative_evidence,
+        priority_score=0.95,
+        eligible_for_primary_evidence=True,
+        eligible_for_corroborating_evidence=True,
+        eligible_for_external_reference=True,
+        counts_toward_independent_source_diversity=True,
+        requires_independent_corroboration=False,
+        minimum_independent_corroborators=0,
+        absolute_claim_support_allowed=True,
+        allowed_evidence_roles=list(EvidenceRole),
+        reason_codes=["classified_as_scientific_primary", "usage_authoritative_evidence"],
+    )
+
+
+class TestProceduralCorroboration:
+    """Validate the procedural corroboration path in validate_bundle."""
+
+    def test_procedural_bundle_approved_with_two_independent_corroborating_sources(self):
+        """Bundles in procedural context with 2+ independent corroborating sources
+        pass validation even without an authoritative source."""
+        from app.services.editorial_v3.source_policy import ResearchSourcePolicyService
+
+        policy = ResearchSourcePolicyService()
+        assessments = [
+            _corroborating_assessment("https://guide-one.example/germination"),
+            _corroborating_assessment("https://guide-two.example/germination"),
+        ]
+        decision = policy.validate_bundle(
+            assessments,
+            critical_claim=False,
+            absolute_claim=False,
+            procedural_context=True,
+        )
+        assert decision.status == "passed", f"Expected passed, got blockers: {decision.blockers}"
+        assert decision.authoritative_source_count == 0
+        assert decision.independent_source_count == 2
+        assert any("procedural corroboration" in w for w in decision.warnings)
+
+    def test_procedural_absolute_claim_still_requires_authoritative_source(self):
+        """Absolute claims (conclusion_status=confirmed) in procedural context
+        must still have an authoritative source — procedural bypass does not apply."""
+        from app.services.editorial_v3.source_policy import ResearchSourcePolicyService
+
+        policy = ResearchSourcePolicyService()
+        assessments = [
+            _corroborating_assessment("https://guide-one.example/germination"),
+            _corroborating_assessment("https://guide-two.example/germination"),
+        ]
+        decision = policy.validate_bundle(
+            assessments,
+            critical_claim=False,
+            absolute_claim=True,
+            procedural_context=True,
+        )
+        assert decision.status == "blocked"
+        assert any("authoritative" in b for b in decision.blockers)
+
+    def test_non_procedural_context_requires_authoritative_source(self):
+        """Without procedural_context, corroborating-only bundles are blocked
+        regardless of the number of independent sources."""
+        from app.services.editorial_v3.source_policy import ResearchSourcePolicyService
+
+        policy = ResearchSourcePolicyService()
+        assessments = [
+            _corroborating_assessment("https://guide-one.example/germination"),
+            _corroborating_assessment("https://guide-two.example/germination"),
+            _corroborating_assessment("https://guide-three.example/germination"),
+        ]
+        decision = policy.validate_bundle(
+            assessments,
+            critical_claim=False,
+            absolute_claim=False,
+            procedural_context=False,
+        )
+        assert decision.status == "blocked"
+        assert any("authoritative" in b for b in decision.blockers)
+
+    def test_procedural_with_single_independent_source_still_blocked(self):
+        """One independent source in procedural context is not enough —
+        the minimum corroboration threshold (2) must be met."""
+        from app.services.editorial_v3.source_policy import ResearchSourcePolicyService
+
+        policy = ResearchSourcePolicyService()
+        assessments = [
+            _corroborating_assessment("https://guide-one.example/germination"),
+        ]
+        decision = policy.validate_bundle(
+            assessments,
+            critical_claim=False,
+            absolute_claim=False,
+            procedural_context=True,
+        )
+        assert decision.status == "blocked"
+        assert any("authoritative" in b for b in decision.blockers)
+
+    def test_procedural_with_authoritative_source_passes_normally(self):
+        """When an authoritative source is present, the bundle passes
+        through the normal path even in procedural context."""
+        from app.services.editorial_v3.source_policy import ResearchSourcePolicyService
+
+        policy = ResearchSourcePolicyService()
+        assessments = [
+            _authoritative_assessment("https://science.example/paper"),
+            _corroborating_assessment("https://guide-one.example/germination"),
+        ]
+        decision = policy.validate_bundle(
+            assessments,
+            critical_claim=False,
+            absolute_claim=False,
+            procedural_context=True,
+        )
+        assert decision.status == "passed"
+        assert decision.authoritative_source_count == 1
+        # No procedural corroboration warning since authoritative source is present
+        assert not any("procedural corroboration" in w for w in decision.warnings)
+

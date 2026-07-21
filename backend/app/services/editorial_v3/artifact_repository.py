@@ -294,7 +294,9 @@ class V3ArtifactRepository:
         await self.db.flush()
         return row
 
-    async def approve_claim_bundles(self) -> list[V3KnowledgeClaimRecord]:
+    async def approve_claim_bundles(
+        self, *, procedural_context: bool = False,
+    ) -> list[V3KnowledgeClaimRecord]:
         rows = list(
             (
                 await self.db.scalars(
@@ -353,6 +355,7 @@ class V3ArtifactRepository:
                 critical_claim=critical,
                 absolute_claim=absolute,
                 comparison_context=comparison,
+                procedural_context=procedural_context,
             )
             valid_conclusion = not any(
                 item.conclusion_status in {

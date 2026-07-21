@@ -148,7 +148,7 @@ class _Artifacts:
     async def approved_coverage_by_node(self):
         return {}
 
-    async def approve_claim_bundles(self):
+    async def approve_claim_bundles(self, *, procedural_context: bool = False):
         return None
 
 
