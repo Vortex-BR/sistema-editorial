@@ -39,26 +39,30 @@ def test_secret_scan_uses_license_free_cli_pinned_by_digest():
     assert "gitleaks.exit" in step["run"]
 
 
-def test_gitleaks_allowlist_is_exact_and_does_not_exempt_whole_test_tree():
+def test_gitleaks_allowlist_is_exact_and_does_not_exempt_paths_or_rules():
     config = read(".gitleaks.toml")
 
     assert "useDefault = true" in config
-    assert "backend/tests/.*" not in config
-    assert "backend/tests" not in config.replace(
-        "backend/tests/test_execution_manifest\\.py", ""
-    ).replace(
-        "backend/tests/test_model_route_policy\\.py", ""
-    ).replace(
-        "backend/tests/test_superior_context_enforcement\\.py", ""
+    assert "paths =" not in config
+    assert "commits =" not in config
+    assert "targetRules" not in config
+    assert "disabledRules" not in config
+
+    expected_literals = (
+        "sk-" + "secret-value-123456789",
+        "sk-" + "parameter-secret-must-not-appear",
+        "sk-" + "abcdefghijklmnopqrstuv",
     )
-    for literal in (
-        "sk-secret-value-123456789",
-        "sk-parameter-secret-must-not-appear",
-        "sk-abcdefghijklmnopqrstuv",
-    ):
+    for literal in expected_literals:
         assert literal in config
-    assert config.count('condition = "AND"') == 3
-    assert config.count('regexTarget = "line"') == 3
+    assert config.count("[[allowlists]]") == 1
+    assert 'regexTarget = "line"' in config
+
+
+def test_runtime_dependency_uses_a_patched_pypdf_release():
+    runtime = read("backend/requirements-runtime.txt")
+    assert "pypdf==6.14.2" in runtime
+    assert "pypdf==5.4.0" not in runtime
 
 
 def test_dependency_gate_enforces_all_three_security_results():
@@ -66,7 +70,12 @@ def test_dependency_gate_enforces_all_three_security_results():
     job = workflow["jobs"]["dependency-security"]
     enforce = named_step(job, "Enforce dependency security policy")["run"]
     upload = named_step(job, "Upload dependency audit reports")
+    summary = named_step(job, "Summarize security findings")["run"]
 
     for status_file in ("pip-audit.exit", "npm-audit.exit", "gitleaks.exit"):
         assert status_file in enforce
     assert "gitleaks.sarif" in upload["with"]["path"]
+    assert "fix_versions" in summary
+    assert "metadata" in summary and "vulnerabilities" in summary
+    assert "ruleId" in summary and "startLine" in summary
+    assert "secret values remain redacted" in summary

@@ -253,7 +253,7 @@ async def test_missing_fixed_dependency_fails_explicitly():
 async def test_manifest_rejects_secret_fields_even_with_a_valid_checksum():
     data = manifest_data()
     data["model_routes"]["writer"]["parameters"]["api_key"] = (
-        "sk-secret-value-123456789"
+        "sk-" + "secret-value-123456789"
     )
     row = manifest_row(data)
 

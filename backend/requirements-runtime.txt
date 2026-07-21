@@ -16,4 +16,4 @@ pyyaml==6.0.2
 pgvector==0.4.1
 python-multipart==0.0.31
 beautifulsoup4==4.13.4
-pypdf==5.4.0
+pypdf==6.14.2

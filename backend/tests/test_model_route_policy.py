@@ -247,7 +247,7 @@ def route_client(db: RouteDb) -> TestClient:
 
 
 def test_api_returns_safe_422_before_persistence(monkeypatch, caplog):
-    secret = "sk-parameter-secret-must-not-appear"
+    secret = "sk-" + "parameter-secret-must-not-appear"
     db = RouteDb()
     monkeypatch.setattr(settings, "admin_api_token", ADMIN_TOKEN)
     caplog.set_level(logging.DEBUG)

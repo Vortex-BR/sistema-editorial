@@ -20,7 +20,9 @@ def test_ci_scans_dependencies_secrets_and_the_exact_image():
 
     assert "pip-audit" in security_text
     assert "npm audit --omit=dev" in security_text
-    assert "gitleaks/gitleaks-action@v2" in security_text
+    assert "gitleaks/gitleaks-action@v2" not in security_text
+    assert "ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:" in security_text
+    assert "--config /repo/.gitleaks.toml" in security_text
     assert "aquasecurity/trivy-action@0.28.0" in production_text
     assert "anchore/sbom-action@v0" in production_text
     assert "HIGH,CRITICAL" in production_text

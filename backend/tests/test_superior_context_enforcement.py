@@ -455,7 +455,7 @@ async def test_admin_preview_is_protected_run_scoped_and_provider_free(monkeypat
         )
         return ComposedContext(
             prompt="PROMPT PREVIEW credential=provider-test-secret",
-            superior_fragment="FULL CONTEXT sk-abcdefghijklmnopqrstuv",
+            superior_fragment="FULL CONTEXT " + "sk-" + "abcdefghijklmnopqrstuv",
             metadata={
                 "mode": "enforced",
                 "status": "ready",

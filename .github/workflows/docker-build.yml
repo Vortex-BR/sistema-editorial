@@ -124,6 +124,7 @@ jobs:
             -w /repo \
             ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
             git \
+            --config /repo/.gitleaks.toml \
             --redact \
             --no-banner \
             --verbose \
@@ -132,6 +133,65 @@ jobs:
             /repo
           echo "$?" > gitleaks.exit
           exit 0
+      - name: Summarize security findings
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          audit_path = Path("pip-audit.json")
+          if audit_path.exists():
+              payload = json.loads(audit_path.read_text(encoding="utf-8"))
+              findings = []
+              for dependency in payload.get("dependencies", []):
+                  for vulnerability in dependency.get("vulns", []):
+                      findings.append(
+                          (
+                              dependency.get("name", "unknown"),
+                              dependency.get("version", "unknown"),
+                              vulnerability.get("id", "unknown"),
+                              ",".join(vulnerability.get("fix_versions", [])) or "none",
+                          )
+                      )
+              print(f"pip-audit findings: {len(findings)}")
+              for package, version, advisory, fixes in findings:
+                  print(f"- {package}=={version}: {advisory}; fixes={fixes}")
+          else:
+              print("pip-audit report was not produced")
+
+          npm_path = Path("npm-audit.json")
+          if npm_path.exists():
+              payload = json.loads(npm_path.read_text(encoding="utf-8"))
+              totals = payload.get("metadata", {}).get("vulnerabilities", {})
+              print(
+                  "npm-audit findings: "
+                  f"critical={totals.get('critical', 0)}, "
+                  f"high={totals.get('high', 0)}, "
+                  f"moderate={totals.get('moderate', 0)}, "
+                  f"low={totals.get('low', 0)}"
+              )
+          else:
+              print("npm-audit report was not produced")
+
+          sarif_path = Path("gitleaks.sarif")
+          if sarif_path.exists():
+              payload = json.loads(sarif_path.read_text(encoding="utf-8"))
+              findings = []
+              for run in payload.get("runs", []):
+                  for result in run.get("results", []):
+                      location = (result.get("locations") or [{}])[0]
+                      physical = location.get("physicalLocation", {})
+                      artifact = physical.get("artifactLocation", {}).get("uri", "unknown")
+                      line = physical.get("region", {}).get("startLine", "unknown")
+                      findings.append((result.get("ruleId", "unknown"), artifact, line))
+              print(f"gitleaks findings: {len(findings)} (secret values remain redacted)")
+              for rule_id, artifact, line in findings:
+                  print(f"- {rule_id}: {artifact}:{line}")
+          else:
+              print("gitleaks report was not produced")
+          PY
       - name: Upload dependency audit reports
         if: always()
         uses: actions/upload-artifact@v4

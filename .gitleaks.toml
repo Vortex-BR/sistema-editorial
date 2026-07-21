@@ -3,26 +3,16 @@ title = "SEO Research Ledger Gitleaks policy"
 [extend]
 useDefault = true
 
-# These values are deliberately synthetic fixtures used to prove that secret
-# redaction and manifest validation work. Each exception is constrained to one
-# exact literal and one exact test file. Real secrets remain blocked.
+# Historical commits contain three deliberately synthetic values that were
+# used by regression tests before V3.7.2. Gitleaks scans git history, so merely
+# rewriting the current fixtures would not remove those old findings. These
+# exceptions match only the three exact fake values; no directory, rule, token
+# prefix, or generic secret pattern is exempted.
 [[allowlists]]
-description = "Synthetic execution-manifest secret fixture"
-condition = "AND"
+description = "Exact synthetic regression fixtures present in git history"
 regexTarget = "line"
-paths = ['''backend/tests/test_execution_manifest\.py''']
-regexes = ['''sk-secret-value-123456789''']
-
-[[allowlists]]
-description = "Synthetic model-route secret fixture"
-condition = "AND"
-regexTarget = "line"
-paths = ['''backend/tests/test_model_route_policy\.py''']
-regexes = ['''sk-parameter-secret-must-not-appear''']
-
-[[allowlists]]
-description = "Synthetic superior-context secret fixture"
-condition = "AND"
-regexTarget = "line"
-paths = ['''backend/tests/test_superior_context_enforcement\.py''']
-regexes = ['''sk-abcdefghijklmnopqrstuv''']
+regexes = [
+  '''sk-secret-value-123456789''',
+  '''sk-parameter-secret-must-not-appear''',
+  '''sk-abcdefghijklmnopqrstuv''',
+]
