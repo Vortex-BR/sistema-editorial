@@ -1,2 +1,0 @@
-# Compatibility entrypoint for local development and CI.
--r requirements-dev.txt

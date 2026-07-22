@@ -1,8 +1,0 @@
-skill_id: research.contradiction-detection
-version: 1.0.0
-applies_to_agent: [research_gatekeeper, editor]
-description: Detecta contradições e diferenças de escopo antes de escrever.
-rules: ["Distinguir conflito de diferenças de população ou contexto", "Criar grupos de conflito", "Bloquear conflito material não resolvido"]
-examples_good: ["As fontes tratam espécies e temperaturas diferentes"]
-examples_bad: ["Escolher a fonte com maior score sem explicar"]
-llm_hint_template: "Não apague divergências; resolva o escopo ou instrua nova pesquisa."
