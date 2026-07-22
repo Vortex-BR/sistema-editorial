@@ -1,0 +1,94 @@
+services:
+  postgres:
+    # Baseline somente para bancos novos/descartáveis. O nome do volume PG17 é
+    # intencionalmente diferente: nunca monte um volume PG16 nesta imagem.
+    image: pgvector/pgvector:0.8.5-pg17
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-seo_ledger}
+      POSTGRES_USER: ${POSTGRES_USER:-seo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+    volumes:
+      - postgres17_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-seo} -d ${POSTGRES_DB:-seo_ledger}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7.4-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: ./backend
+      args:
+        APP_COMMIT_SHA: ${APP_COMMIT_SHA:-unversioned}
+        APP_BUILD_VERSION: ${APP_BUILD_VERSION:-development}
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    env_file: .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./skills:/app/skills:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ./backend
+      args:
+        APP_COMMIT_SHA: ${APP_COMMIT_SHA:-unversioned}
+        APP_BUILD_VERSION: ${APP_BUILD_VERSION:-development}
+    command: celery -A app.workers.celery_app worker --loglevel=INFO --concurrency=2
+    env_file: .env
+    volumes:
+      - ./skills:/app/skills:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  beat:
+    # Uma única instância. Não use `docker compose up --scale beat=...`.
+    build:
+      context: ./backend
+      args:
+        APP_COMMIT_SHA: ${APP_COMMIT_SHA:-unversioned}
+        APP_BUILD_VERSION: ${APP_BUILD_VERSION:-development}
+    command: celery -A app.workers.celery_app beat --loglevel=INFO --schedule=/var/lib/seo/celery/celerybeat-schedule
+    env_file: .env
+    volumes:
+      - ./skills:/app/skills:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: http://localhost:8000/api/v1
+    ports:
+      - "3000:8080"
+    depends_on:
+      - api
+
+volumes:
+  # Não renomeie/reutilize aqui o antigo postgres_data de PG16. Migre dados para
+  # este volume novo com pg_dump/pg_restore ou pg_upgrade planejado.
+  postgres17_data:
+  redis_data:

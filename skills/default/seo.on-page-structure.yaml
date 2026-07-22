@@ -1,0 +1,12 @@
+skill_id: seo.on-page-structure
+version: 1.2.0
+applies_to_agent: [writer, finalizer]
+description: Estrutura headings e metadados sem sacrificar clareza.
+rules:
+  - "Um H1 único"
+  - "H2 organiza etapas naturais do raciocínio; H3 é opcional e só aprofunda uma seção que realmente precisa de subdivisão"
+  - "Headings têm até 80 caracteres e nunca copiam perguntas internas de pesquisa"
+  - "Keywords entram somente quando naturais"
+examples_good: ["H2: Critérios que realmente diferenciam os planos"]
+examples_bad: ["Repetir a keyword em todo heading", "Criar um H3 para cada parágrafo curto", "Usar como H2 a pergunta longa enviada ao Pesquisador"]
+llm_hint_template: "A hierarquia deve refletir o ângulo editorial e conduzir a leitura; perguntas internas servem apenas para cobertura factual."

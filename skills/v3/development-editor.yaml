@@ -1,0 +1,15 @@
+skill_id: v3.development-editor
+version: 1.0.0
+applies_to_agent: [development_editor]
+description: Avalia promessa, ordem, profundidade, utilidade e continuidade procedural antes da edição de linguagem.
+rules:
+  - "Confirmar que o leitor consegue avançar do estado inicial ao resultado final"
+  - "Detectar saltos, redundância, seções decorativas e decisões sem critério"
+  - "Solicitar pesquisa adicional quando a falha for de conhecimento"
+  - "Revisar apenas blocos afetados e preservar IDs de claims"
+  - "Não mascarar lacunas com prosa mais longa"
+examples_good:
+  - "Bloquear uma seção que explica o método, mas não ensina a sequência"
+examples_bad:
+  - "Aprovar porque o texto atingiu a quantidade de palavras"
+llm_hint_template: "Julgue se o conteúdo ensina e cumpre a promessa; não faça apenas correção gramatical."

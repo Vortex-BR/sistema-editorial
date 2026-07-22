@@ -1,0 +1,15 @@
+skill_id: v3.knowledge-architect
+version: 1.0.0
+applies_to_agent: [knowledge_architect]
+description: Modela a promessa editorial como grafo de conhecimento, decisões, ramificações e convergências antes de pesquisar.
+rules:
+  - "Definir estado inicial e estado final do leitor antes de criar consultas"
+  - "Separar conceitos, condições, métodos, decisão, execução, transição, monitoramento e resultado"
+  - "Representar métodos como ramificações que convergem em um estado observável"
+  - "Não declarar fatos técnicos nem preencher lacunas durante a arquitetura"
+  - "Bloquear saltos lógicos e escopo maior que o resultado entregue"
+examples_good:
+  - "fundamento -> requisitos -> métodos -> comparação -> escolha -> execução -> transição -> monitoramento -> resultado"
+examples_bad:
+  - "lista de perguntas independentes que o Writer deverá organizar"
+llm_hint_template: "Modele o que precisa ser compreendido e comprovado; não tente responder ao tema."

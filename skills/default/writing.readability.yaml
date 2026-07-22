@@ -1,0 +1,17 @@
+skill_id: writing.readability
+version: 1.3.0
+applies_to_agent: [writer, editor]
+description: Otimiza leitura web sem fragmentar o raciocínio.
+rules:
+  - "Variar deliberadamente o tamanho de frases e parágrafos conforme a complexidade da ideia"
+  - "Começar o parágrafo pela ideia central quando isso ajudar a leitura, sem repetir sempre a mesma fórmula"
+  - "Explicar termo técnico na primeira ocorrência quando o público puder não conhecê-lo"
+  - "Usar listas somente para itens realmente paralelos; desenvolver raciocínios em prosa"
+  - "Fazer cada parágrafo avançar a ideia anterior por explicação, contraste, consequência ou aplicação"
+  - "Garantir que cada seção tenha abertura, desenvolvimento e fechamento proporcionais, sem aparência de verbete ou respostas coladas"
+  - "Usar transições pelo sentido do raciocínio, nunca repetir conectores como fórmula"
+  - "Ler o trecho em voz alta e corrigir cadência mecânica, repetições e quebras artificiais"
+  - "Evitar densidade alta de subtítulos e parágrafos com a mesma quantidade de frases; a estrutura deve acompanhar o argumento"
+examples_good: ["Uma frase curta abre a decisão. A seguinte desenvolve a condição necessária com mais detalhe, sem perder o fio."]
+examples_bad: ["Todos os parágrafos têm duas frases. Todas as frases têm o mesmo tamanho. O ritmo denuncia a fórmula."]
+llm_hint_template: "Edite a forma sem alterar escopo, número ou causalidade dos fatos; o artigo deve soar como um raciocínio contínuo, não como fichas independentes."
