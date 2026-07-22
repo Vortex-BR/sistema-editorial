@@ -1,8 +1,0 @@
-skill_id: editorial.fidelity-check
-version: 1.0.0
-applies_to_agent: [editor]
-description: Verifica entailment entre cada sentença e sua evidência.
-rules: ["Revisar sentença por sentença", "Comparar números, escopo e modalizadores", "Rejeitar citação decorativa", "Marcar apenas blocos problemáticos para reescrita"]
-examples_good: ["Fonte diz pode; texto também diz pode"]
-examples_bad: ["Fonte diz pode; texto diz comprova"]
-llm_hint_template: "Uma referência relacionada não basta; ela deve sustentar a afirmação específica."
