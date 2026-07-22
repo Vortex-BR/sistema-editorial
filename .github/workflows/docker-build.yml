@@ -1,0 +1,455 @@
+name: Quality gate and immutable production image
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+permissions:
+  contents: read
+  packages: write
+
+
+env:
+  CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  CI_MERGE_SHA: ${{ github.sha }}
+  IMAGE_SOURCE: ${{ github.server_url }}/${{ github.repository }}
+  PGVECTOR_IMAGE: pgvector/pgvector:0.8.5-pg17
+  EXPECTED_PGVECTOR_VERSION: "0.8.5"
+
+jobs:
+  backend-quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements-runtime.txt
+            backend/requirements-dev.txt
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r backend/requirements-dev.txt
+      - name: Resolve and verify the single Alembic head
+        run: |
+          resolved="$(python scripts/ci/resolve_alembic_head.py)"
+          test -n "${resolved}"
+          echo "ALEMBIC_HEAD=${resolved}"
+      - name: Run Ruff
+        run: python -m ruff check backend scripts/ci/resolve_alembic_head.py
+      - name: Run backend tests without external services
+        run: >-
+          python -m pytest -q backend/tests
+          --ignore=backend/tests/test_celery_dispatch_e2e.py
+          --ignore=backend/tests/test_migrations_integration.py
+          --ignore=backend/tests/test_pipeline_dispatch_broker_integration.py
+          --ignore=backend/tests/test_pipeline_dispatch_integration.py
+          --ignore=backend/tests/test_pipeline_integration.py
+          --ignore=backend/tests/test_redis_integration.py
+
+  frontend-quality:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Run frontend tests
+        run: npm test
+      - name: Run frontend lint
+        run: npm run lint
+      - name: Build frontend
+        run: npm run build
+
+  dependency-security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Audit Python runtime dependencies
+        shell: bash
+        run: |
+          set +e
+          python -m pip install --upgrade pip
+          python -m pip install pip-audit==2.9.0
+          python -m pip_audit \
+            --requirement backend/requirements-runtime.txt \
+            --format json \
+            --output pip-audit.json
+          echo "$?" > pip-audit.exit
+          exit 0
+      - name: Audit frontend runtime dependencies
+        shell: bash
+        working-directory: frontend
+        run: |
+          set +e
+          npm audit --omit=dev --audit-level=high --json > ../npm-audit.json
+          echo "$?" > ../npm-audit.exit
+          exit 0
+      - name: Detect committed secrets
+        shell: bash
+        run: |
+          set +e
+          docker run --rm \
+            -e GIT_CONFIG_COUNT=1 \
+            -e GIT_CONFIG_KEY_0=safe.directory \
+            -e GIT_CONFIG_VALUE_0=/repo \
+            -v "${GITHUB_WORKSPACE}:/repo" \
+            -w /repo \
+            ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
+            git \
+            --config /repo/.gitleaks.toml \
+            --redact \
+            --no-banner \
+            --verbose \
+            --report-format sarif \
+            --report-path /repo/gitleaks.sarif \
+            /repo
+          echo "$?" > gitleaks.exit
+          exit 0
+      - name: Summarize security findings
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          audit_path = Path("pip-audit.json")
+          if audit_path.exists():
+              payload = json.loads(audit_path.read_text(encoding="utf-8"))
+              findings = []
+              for dependency in payload.get("dependencies", []):
+                  for vulnerability in dependency.get("vulns", []):
+                      findings.append(
+                          (
+                              dependency.get("name", "unknown"),
+                              dependency.get("version", "unknown"),
+                              vulnerability.get("id", "unknown"),
+                              ",".join(vulnerability.get("fix_versions", [])) or "none",
+                          )
+                      )
+              print(f"pip-audit findings: {len(findings)}")
+              for package, version, advisory, fixes in findings:
+                  print(f"- {package}=={version}: {advisory}; fixes={fixes}")
+          else:
+              print("pip-audit report was not produced")
+
+          npm_path = Path("npm-audit.json")
+          if npm_path.exists():
+              payload = json.loads(npm_path.read_text(encoding="utf-8"))
+              totals = payload.get("metadata", {}).get("vulnerabilities", {})
+              print(
+                  "npm-audit findings: "
+                  f"critical={totals.get('critical', 0)}, "
+                  f"high={totals.get('high', 0)}, "
+                  f"moderate={totals.get('moderate', 0)}, "
+                  f"low={totals.get('low', 0)}"
+              )
+          else:
+              print("npm-audit report was not produced")
+
+          sarif_path = Path("gitleaks.sarif")
+          if sarif_path.exists():
+              payload = json.loads(sarif_path.read_text(encoding="utf-8"))
+              findings = []
+              for run in payload.get("runs", []):
+                  for result in run.get("results", []):
+                      location = (result.get("locations") or [{}])[0]
+                      physical = location.get("physicalLocation", {})
+                      artifact = physical.get("artifactLocation", {}).get("uri", "unknown")
+                      line = physical.get("region", {}).get("startLine", "unknown")
+                      findings.append((result.get("ruleId", "unknown"), artifact, line))
+              print(f"gitleaks findings: {len(findings)} (secret values remain redacted)")
+              for rule_id, artifact, line in findings:
+                  print(f"- {rule_id}: {artifact}:{line}")
+          else:
+              print("gitleaks report was not produced")
+          PY
+      - name: Upload dependency audit reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-security-reports
+          path: |
+            pip-audit.json
+            npm-audit.json
+            gitleaks.sarif
+          if-no-files-found: warn
+      - name: Enforce dependency security policy
+        shell: bash
+        run: |
+          python_status="$(cat pip-audit.exit)"
+          npm_status="$(cat npm-audit.exit)"
+          gitleaks_status="$(cat gitleaks.exit)"
+          if [ "${python_status}" != "0" ] || [ "${npm_status}" != "0" ] || [ "${gitleaks_status}" != "0" ]; then
+            echo "Dependency security policy failed: pip-audit=${python_status}, npm-audit=${npm_status}, gitleaks=${gitleaks_status}" >&2
+            exit 1
+          fi
+
+  integration-tests:
+    needs: [backend-quality, frontend-quality, dependency-security]
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.5-pg17
+        env:
+          POSTGRES_DB: seo_integration_test
+          POSTGRES_USER: seo
+          POSTGRES_PASSWORD: test-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U seo -d seo_integration_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7.4-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      TEST_DATABASE_URL: postgresql+asyncpg://seo:test-password@127.0.0.1:5432/seo_integration_test
+      TEST_POSTGRES_ADMIN_URL: postgresql+asyncpg://seo:test-password@127.0.0.1:5432/postgres
+      TEST_REDIS_URL: redis://127.0.0.1:6379/0
+      REDIS_URL: redis://127.0.0.1:6379/0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+      - name: Verify PostgreSQL 17 and pgvector 0.8.5
+        run: |
+          python - <<'PY'
+          import asyncio
+          import os
+          import asyncpg
+
+          async def verify():
+              url = os.environ["TEST_DATABASE_URL"].replace(
+                  "postgresql+asyncpg://", "postgresql://", 1
+              )
+              connection = await asyncpg.connect(url)
+              try:
+                  server_version_num = int(await connection.fetchval("SHOW server_version_num"))
+                  assert 170000 <= server_version_num < 180000, server_version_num
+                  await connection.execute("CREATE EXTENSION IF NOT EXISTS vector")
+                  vector_version = await connection.fetchval(
+                      "SELECT extversion FROM pg_extension WHERE extname = 'vector'"
+                  )
+                  assert vector_version == "0.8.5", vector_version
+                  print(
+                      f"PostgreSQL server_version_num={server_version_num}; "
+                      f"pgvector={vector_version}"
+                  )
+              finally:
+                  await connection.close()
+
+          asyncio.run(verify())
+          PY
+      - name: Apply real migrations and verify the resolved head
+        env:
+          DATABASE_URL: postgresql+asyncpg://seo:test-password@127.0.0.1:5432/seo_integration_test
+        run: |
+          expected_head="$(python ../scripts/ci/resolve_alembic_head.py)"
+          python -m alembic upgrade head
+          current_head="$(python -m alembic current | awk '{print $1}')"
+          test "${current_head}" = "${expected_head}"
+      - name: Run PostgreSQL and Redis integration tests
+        run: >-
+          python -m pytest -q
+          tests/test_pipeline_integration.py
+          tests/test_pipeline_dispatch_integration.py
+          tests/test_pipeline_dispatch_broker_integration.py
+          tests/test_migrations_integration.py
+          tests/test_redis_integration.py
+      - name: Run real Celery solo and prefork E2E
+        env:
+          RUN_CELERY_E2E: "1"
+        run: python -m pytest -q tests/test_celery_dispatch_e2e.py
+
+  production-image:
+    needs: [backend-quality, frontend-quality, dependency-security, integration-tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      RESOURCE_PREFIX: ${{ github.repository }}-${{ github.run_id }}-image-smoke-${{ github.run_attempt }}
+      POSTGRES_IMAGE: pgvector/pgvector:0.8.5-pg17
+      REDIS_IMAGE: redis:7.4-alpine
+      PRESERVE_IMAGE: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+      - name: Resolve immutable candidate metadata
+        id: metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          checkout_sha="$(git rev-parse HEAD)"
+          test "${checkout_sha}" = "${CANDIDATE_SHA}"
+          source_digest="$(git rev-parse HEAD^{tree})"
+          short_sha="${CANDIDATE_SHA:0:12}"
+          image_tag="seo-research-ledger:candidate-${short_sha}"
+          build_version="github-actions-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          alembic_head="$(python scripts/ci/resolve_alembic_head.py)"
+          {
+            echo "checkout_sha=${checkout_sha}"
+            echo "source_digest=${source_digest}"
+            echo "short_sha=${short_sha}"
+            echo "image_tag=${image_tag}"
+            echo "build_version=${build_version}"
+            echo "alembic_head=${alembic_head}"
+          } >> "${GITHUB_OUTPUT}"
+      - uses: docker/setup-buildx-action@v3
+      - name: Build and load the only production image candidate
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          load: true
+          push: false
+          tags: ${{ steps.metadata.outputs.image_tag }}
+          build-args: |
+            APP_COMMIT_SHA=${{ env.CANDIDATE_SHA }}
+            APP_BUILD_VERSION=${{ steps.metadata.outputs.build_version }}
+            APP_SOURCE_DIGEST=${{ steps.metadata.outputs.source_digest }}
+            APP_IMAGE_SOURCE=${{ env.IMAGE_SOURCE }}
+          labels: |
+            org.opencontainers.image.revision=${{ env.CANDIDATE_SHA }}
+            org.opencontainers.image.version=${{ steps.metadata.outputs.build_version }}
+            org.opencontainers.image.source=${{ env.IMAGE_SOURCE }}
+      - name: Scan the exact candidate image with Trivy
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ steps.metadata.outputs.image_tag }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: Generate SBOM for the exact candidate image
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ steps.metadata.outputs.image_tag }}
+          format: cyclonedx-json
+          output-file: sbom.cdx.json
+      - name: Run production image smoke test
+        shell: bash
+        env:
+          IMAGE_TAG: ${{ steps.metadata.outputs.image_tag }}
+          CANDIDATE_SHA: ${{ env.CANDIDATE_SHA }}
+          CI_MERGE_SHA: ${{ env.CI_MERGE_SHA }}
+          EXPECTED_APP_COMMIT_SHA: ${{ env.CANDIDATE_SHA }}
+          EXPECTED_APP_BUILD_VERSION: ${{ steps.metadata.outputs.build_version }}
+          EXPECTED_APP_SOURCE_DIGEST: ${{ steps.metadata.outputs.source_digest }}
+          EXPECTED_IMAGE_SOURCE: ${{ env.IMAGE_SOURCE }}
+          EXPECTED_ALEMBIC_HEAD: ${{ steps.metadata.outputs.alembic_head }}
+          EXPECTED_PGVECTOR_VERSION: ${{ env.EXPECTED_PGVECTOR_VERSION }}
+        run: bash scripts/ci/image-smoke.sh
+      - name: Show production smoke diagnostics
+        if: failure()
+        shell: bash
+        env:
+          IMAGE_TAG: ${{ steps.metadata.outputs.image_tag }}
+          CANDIDATE_SHA: ${{ env.CANDIDATE_SHA }}
+          CI_MERGE_SHA: ${{ env.CI_MERGE_SHA }}
+          EXPECTED_APP_COMMIT_SHA: ${{ env.CANDIDATE_SHA }}
+          EXPECTED_APP_BUILD_VERSION: ${{ steps.metadata.outputs.build_version }}
+          EXPECTED_APP_SOURCE_DIGEST: ${{ steps.metadata.outputs.source_digest }}
+          EXPECTED_IMAGE_SOURCE: ${{ env.IMAGE_SOURCE }}
+          EXPECTED_ALEMBIC_HEAD: ${{ steps.metadata.outputs.alembic_head }}
+          EXPECTED_PGVECTOR_VERSION: ${{ env.EXPECTED_PGVECTOR_VERSION }}
+        run: bash scripts/ci/image-smoke.sh diagnostics
+      - name: Remove scoped smoke containers but preserve the tested image
+        if: always()
+        shell: bash
+        env:
+          IMAGE_TAG: ${{ steps.metadata.outputs.image_tag }}
+          CANDIDATE_SHA: ${{ env.CANDIDATE_SHA }}
+          CI_MERGE_SHA: ${{ env.CI_MERGE_SHA }}
+          EXPECTED_APP_COMMIT_SHA: ${{ env.CANDIDATE_SHA }}
+          EXPECTED_APP_BUILD_VERSION: ${{ steps.metadata.outputs.build_version }}
+          EXPECTED_APP_SOURCE_DIGEST: ${{ steps.metadata.outputs.source_digest }}
+          EXPECTED_IMAGE_SOURCE: ${{ env.IMAGE_SOURCE }}
+          EXPECTED_ALEMBIC_HEAD: ${{ steps.metadata.outputs.alembic_head }}
+          EXPECTED_PGVECTOR_VERSION: ${{ env.EXPECTED_PGVECTOR_VERSION }}
+        run: bash scripts/ci/image-smoke.sh cleanup
+      - name: Log in to GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish the exact tested image without rebuilding
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        id: publish
+        shell: bash
+        env:
+          IMAGE_TAG: ${{ steps.metadata.outputs.image_tag }}
+        run: |
+          set -euo pipefail
+          repository="${GITHUB_REPOSITORY,,}"
+          target="ghcr.io/${repository}:sha-${CANDIDATE_SHA}"
+          source_id="$(docker image inspect --format '{{.Id}}' "${IMAGE_TAG}")"
+          docker tag "${IMAGE_TAG}" "${target}"
+          target_id="$(docker image inspect --format '{{.Id}}' "${target}")"
+          test "${source_id}" = "${target_id}"
+          push_output="$(docker push "${target}")"
+          printf '%s\n' "${push_output}"
+          digest="$(printf '%s\n' "${push_output}" | sed -nE 's/.*digest: (sha256:[0-9a-f]{64}).*/\1/p' | tail -n 1)"
+          test -n "${digest}"
+          immutable_ref="ghcr.io/${repository}@${digest}"
+          echo "target=${target}" >> "${GITHUB_OUTPUT}"
+          echo "digest=${immutable_ref}" >> "${GITHUB_OUTPUT}"
+          echo "Published tested image ${immutable_ref}"
+      - name: Upload image security evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-image-security-evidence
+          path: |
+            trivy-results.sarif
+            sbom.cdx.json
+          if-no-files-found: warn

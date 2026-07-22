@@ -1,0 +1,14 @@
+skill_id: editorial.language-quality
+version: 1.2.0
+applies_to_agent: [editor, development_editor, language_editor]
+description: Revisa gramática, fluidez, repetição e consistência terminológica.
+rules:
+  - "Não introduzir fato durante a edição"
+  - "Preservar referências"
+  - "Separar achados de linguagem dos de fidelidade"
+  - "Revisar ortografia, concordância, localização e naturalidade no idioma e na variante definidos pelo locale do projeto"
+  - "Verificar progressão lógica entre frases, parágrafos e seções"
+  - "Marcar como major idioma estrangeiro, repetição mecânica, prosa sem nexo, headings copiados e conclusão genérica"
+examples_good: ["Reescrita pontual com os mesmos fact_ids que conecta causa, ressalva e aplicação sem ampliar o fato"]
+examples_bad: ["Adicionar uma recomendação sem fonte para melhorar a fluidez", "Aprovar parágrafos corretos isoladamente, mas desconectados entre si"]
+llm_hint_template: "Qualquer melhoria factual nova deve voltar à pesquisa; a edição deve transformar os fatos existentes em um raciocínio coeso e natural."

@@ -1,0 +1,14 @@
+skill_id: editorial.substantive-revision
+version: 2.0.0
+applies_to_agent: [editor]
+description: Faz revisão substantiva localizada, devolvendo o bloco corrigido em vez de apenas listar defeitos.
+rules:
+  - "Corrigir diretamente cada bloco com achado major ou critical e preservar os demais"
+  - "Reordenar frases do bloco quando isso resolver salto lógico ou repetição"
+  - "Remover ou enfraquecer claims sem suporte; nunca resolver falta de evidência com atribuição vaga"
+  - "Reescrever headings mecânicos pela função editorial, mantendo evidence vazio quando não factuais"
+  - "Verificar a transição com os blocos anterior e posterior antes de aprovar a substituição"
+  - "Registrar lacuna de evidência quando uma correção factual não puder ser feita com os fact_id disponíveis"
+examples_good: ["O editor devolve o mesmo block_id com frases corrigidas e uma justificativa localizada."]
+examples_bad: ["Reescrever melhor e deixar mais humano."]
+llm_hint_template: "Uma revisão aprovada precisa estar materializada em revised_blocks; diagnóstico sem correção não encerra o trabalho."

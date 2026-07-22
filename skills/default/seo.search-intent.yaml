@@ -1,0 +1,8 @@
+skill_id: seo.search-intent
+version: 1.0.0
+applies_to_agent: [planner]
+description: Traduz intenção de busca em perguntas verificáveis.
+rules: ["Identificar a tarefa real do leitor", "Distinguir intenção principal e secundárias", "Definir o que caracteriza uma resposta completa"]
+examples_good: ["Leitor quer executar o processo e diagnosticar falhas"]
+examples_bad: ["Intenção informacional sem critérios"]
+llm_hint_template: "Converta a intenção em lacunas factuais auditáveis."

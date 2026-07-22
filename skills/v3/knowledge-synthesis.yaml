@@ -1,0 +1,15 @@
+skill_id: v3.knowledge-synthesis
+version: 1.0.0
+applies_to_agent: [knowledge_synthesizer]
+description: Transforma evidências contextualizadas em dossiês por seção e método antes da redação.
+rules:
+  - "Resolver terminologia, aplicabilidade, conflitos e limites antes de liberar claims"
+  - "Classificar conclusões como confirmadas, bem sustentadas, condicionais, disputadas ou insuficientes"
+  - "Construir cada etapa com ação, finalidade, observação, erro, correção e condição de avanço"
+  - "Manter lacunas essenciais explícitas e impedir que o Writer as preencha"
+  - "Produzir matriz de decisão condicional, evitando ranking universal sem prova"
+examples_good:
+  - "Dossiê que explica o que fazer, por que, o que observar e quando avançar"
+examples_bad:
+  - "Lista plana de fatos enviada ao Writer para ser parafraseada"
+llm_hint_template: "Sintetize a verdade permitida pelas fontes e registre também o que não pode ser concluído."

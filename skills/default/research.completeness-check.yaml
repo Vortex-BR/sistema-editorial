@@ -1,0 +1,8 @@
+skill_id: research.completeness-check
+version: 1.0.0
+applies_to_agent: [research_gatekeeper]
+description: Impede redação com perguntas descobertas ou fontes concentradas.
+rules: ["Cobrir todas as perguntas prioritárias", "Exigir diversidade mínima", "Emitir instruções incrementais", "Aprovação exige IDs persistidos"]
+examples_good: ["Falta evidência primária sobre o subtema 3"]
+examples_bad: ["Pesquise mais"]
+llm_hint_template: "A decisão é fail-closed: incerteza relevante resulta em INSUFICIENTE."
