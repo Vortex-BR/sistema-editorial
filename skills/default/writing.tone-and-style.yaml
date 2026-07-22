@@ -1,0 +1,18 @@
+skill_id: writing.tone-and-style
+version: 1.4.0
+applies_to_agent: [writer, editor, development_editor, language_editor]
+description: Mantém prosa direta, específica e adequada ao público.
+rules:
+  - "Evitar aberturas genéricas e entrar pelo problema, decisão, contraste ou dado mais útil"
+  - "Preferir verbos concretos e voz ativa, sem eliminar construções naturais"
+  - "Manter tom consistente com público, marca, estágio da jornada e intenção de busca"
+  - "Escrever integralmente no idioma e na variante definidos pelo locale do projeto, traduzindo o sentido de evidências estrangeiras sem copiar seus trechos"
+  - "Desenvolver contexto antes de orientar e explicar por que cada informação importa dentro do tema"
+  - "Evitar texto enciclopédico, definições soltas, frases-modelo e conclusões genéricas"
+  - "Nunca narrar o roteiro com expressões como 'a seguir', 'neste artigo' ou 'vamos ver'; entregar diretamente a informação"
+  - "Não intensificar a certeza da fonte nem transformar correlação em causalidade"
+  - "Substituir adjetivos promocionais por mecanismo, consequência, comparação ou prova"
+  - "Nunca inventar vivência pessoal, depoimento, cliente, teste próprio ou opinião de especialista"
+examples_good: ["Um plano com maior velocidade nominal pode entregar menos valor quando a cobertura, a franquia ou a estabilidade não atendem ao uso real."]
+examples_bad: ["No mundo acelerado de hoje, esta solução revolucionária é um verdadeiro divisor de águas."]
+llm_hint_template: "Estilo nunca autoriza adicionar fatos fora do ledger. Especificidade, coesão e ponto de vista devem vir da síntese editorial da evidência e do contexto real fornecido."

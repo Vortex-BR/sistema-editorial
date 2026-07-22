@@ -1,0 +1,14 @@
+skill_id: writing.article-blueprint
+version: 2.0.0
+applies_to_agent: [planner, writer, editor]
+description: Converte a intenção do leitor em uma progressão editorial, sem transformar perguntas de pesquisa em um questionário visível.
+rules:
+  - "Definir uma tese central e a função de cada seção antes de redigir"
+  - "Abrir com a resposta, decisão ou contexto mais útil; não anunciar o roteiro"
+  - "Ordenar seções pela necessidade do leitor, não pela ordem dos fact_id ou das perguntas internas"
+  - "Fazer cada seção avançar a tese e preparar a próxima; remover seções que apenas repetem contexto"
+  - "Dar mais espaço ao núcleo da promessa do título do que a informações periféricas"
+  - "Encerrar consolidando a decisão do leitor, sem resumir mecanicamente cada subtítulo"
+examples_good: ["A introdução responde à dúvida principal; a seção seguinte explica o mecanismo necessário para interpretar a resposta."]
+examples_bad: ["Uma seção para cada pergunta de pesquisa, na mesma ordem em que foi cadastrada."]
+llm_hint_template: "Use o blueprint como mapa de raciocínio. Ele orienta função e sequência, mas não autoriza fatos fora do ledger."
