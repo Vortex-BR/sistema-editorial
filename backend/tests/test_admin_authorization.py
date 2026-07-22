@@ -32,6 +32,7 @@ BUSINESS_READ_PATHS = (
     "/api/v1/projects",
     f"/api/v1/pipeline-runs/{PIPELINE_RUN_ID}",
     f"/api/v1/projects/{PROJECT_ID}",
+    f"/api/v1/projects/{PROJECT_ID}/error-logs?pipeline_run_id={PIPELINE_RUN_ID}",
     f"/api/v1/projects/{PROJECT_ID}/facts?pipeline_run_id={PIPELINE_RUN_ID}",
     "/api/v1/dashboard",
     "/api/v1/config/credentials",

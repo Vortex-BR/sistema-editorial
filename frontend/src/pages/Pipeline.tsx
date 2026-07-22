@@ -19,6 +19,7 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { ErrorLogsPanel } from "../components/ErrorLogsPanel";
 import { Status, statusLabel } from "../components/Status";
 import { adminApi, adminDownload, safePublicMessage, wsUrl } from "../lib/api";
 type ReviewRisk = { code?: string; severity?: string; message?: string } | string;
@@ -329,6 +330,7 @@ export function Pipeline() {
   const [data, setData] = useState<Detail | null>(null);
   const [events, setEvents] = useState<PipelineStreamEvent[]>([]);
   const [selectedRunId, setSelectedRunId] = useState("");
+  const [activeTab, setActiveTab] = useState<"overview" | "logs">("overview");
   const [error, setError] = useState("");
   const [exportError, setExportError] = useState("");
   const [exporting, setExporting] = useState(false);
@@ -371,6 +373,7 @@ export function Pipeline() {
     setData(null);
     setEvents([]);
     setSelectedRunId("");
+    setActiveTab("overview");
     setError("");
     setReviewer("");
     setReviewObservation("");
@@ -742,6 +745,33 @@ export function Pipeline() {
           </button>
         </div>
       </div>
+      <nav className="project-tabs" aria-label="Seções do projeto">
+        <button
+          type="button"
+          className={activeTab === "overview" ? "active" : ""}
+          aria-current={activeTab === "overview" ? "page" : undefined}
+          onClick={() => setActiveTab("overview")}
+        >
+          Visão geral
+        </button>
+        <button
+          type="button"
+          className={activeTab === "logs" ? "active" : ""}
+          aria-current={activeTab === "logs" ? "page" : undefined}
+          onClick={() => setActiveTab("logs")}
+        >
+          Logs de erros
+          {selectedRunStopped && <span className="tab-alert" aria-label="Execução com erro">!</span>}
+        </button>
+      </nav>
+      {activeTab === "logs" ? (
+        <ErrorLogsPanel
+          projectId={id}
+          pipelineRunId={selectedRunId || undefined}
+          live={streamEnabled}
+        />
+      ) : (
+        <>
       {exportError && (
         <div className="notice error" role="alert">
           {exportError}
@@ -776,6 +806,11 @@ export function Pipeline() {
             </strong>
             <p>{safePublicMessage(selectedRunError || selectedRunErrorCode)}</p>
             {selectedRunErrorCode && <small>Diagnóstico: {selectedRunErrorCode}</small>}
+            {selectedRunStatus === "failed" && (
+              <button type="button" className="text-button" onClick={() => setActiveTab("logs")}>
+                Abrir logs técnicos
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -1417,6 +1452,8 @@ export function Pipeline() {
           </div>
           <pre>{data.article_version.markdown}</pre>
         </section>
+      )}
+        </>
       )}
       <ConfirmDialog
         open={cancelDialogOpen}

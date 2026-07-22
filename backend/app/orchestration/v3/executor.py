@@ -909,13 +909,18 @@ class EditorialV3Executor:
         )
         if state.contract_id is None:
             raise V3PipelineBlocked("Knowledge contract ID is missing")
-        existing = {
-            str(item.document_id): item
-            for item in (
-                StructuredSourceDocument.model_validate(payload)
-                for payload in state.source_documents
+        existing: dict[str, StructuredSourceDocument] = {}
+        # Reconcile checkpoint payloads created by older deployments.  Their
+        # parser-level document IDs were global across runs, while persisted
+        # source rows are run-scoped.  Normalizing here keeps later claim lookup
+        # aligned with the actual database primary key.
+        for payload in state.source_documents:
+            item = StructuredSourceDocument.model_validate(payload)
+            source_row = await self.artifacts.source_document(
+                state.contract_id, item
             )
-        }
+            item = item.model_copy(update={"document_id": source_row.id})
+            existing[str(item.document_id)] = item
         updated_task_map = dict(state.source_task_map)
         read_failures: list[str] = []
         read_attempts = {
@@ -947,7 +952,12 @@ class EditorialV3Executor:
                     processed.add(raw_key)
                 continue
             processed.add(raw_key)
-            await self.artifacts.source_document(state.contract_id, structured)
+            source_row = await self.artifacts.source_document(
+                state.contract_id, structured
+            )
+            structured = structured.model_copy(
+                update={"document_id": source_row.id}
+            )
             tasks = updated_task_map.get(raw_key, [])
             for key in {
                 raw_key,
@@ -4377,7 +4387,12 @@ class EditorialV3Executor:
                     processed.add(raw_key)
                 continue
             processed.add(raw_key)
-            await self.artifacts.source_document(state.contract_id, structured)
+            source_row = await self.artifacts.source_document(
+                state.contract_id, structured
+            )
+            structured = structured.model_copy(
+                update={"document_id": source_row.id}
+            )
             tasks = sorted(new_task_map.get(raw_key, set()))
             for key in {
                 raw_key,

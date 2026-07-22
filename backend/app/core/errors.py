@@ -32,6 +32,11 @@ _HEADER_SECRET = re.compile(
     r"((?:authorization|x-goog-api-key|x-api-key|cookie)\s*[:=]\s*)[^\s,;}]+",
     re.IGNORECASE,
 )
+_INLINE_SECRET = re.compile(
+    r"((?:api[-_]?key|token|access_token|password|passwd|secret|database_url|"
+    r"redis_url|dsn)\s*[:=]\s*)[^\s,;}\]]+",
+    re.IGNORECASE,
+)
 _SQL_STRING_LITERAL = re.compile(r"'(?:''|[^'])*'")
 _TECHNICAL_ERROR = re.compile(
     r"(?:traceback|sqlalchemy|asyncpg|insert\s+into|select\s+.+\s+from|"
@@ -131,6 +136,7 @@ def redact_sensitive(value: Any) -> Any:
     redacted = _PARAMETERS.sub("[parameters: ***]", value)
     redacted = _BEARER.sub(r"\1***", redacted)
     redacted = _HEADER_SECRET.sub(r"\1***", redacted)
+    redacted = _INLINE_SECRET.sub(r"\1***", redacted)
     redacted = _DSN.sub(r"\1***@", redacted)
     return _QUERY_SECRET.sub(r"\1***", redacted)
 

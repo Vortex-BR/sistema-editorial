@@ -26,6 +26,7 @@ from app.services.execution_manifest import (
     ExecutionManifestError,
     ExecutionManifestService,
 )
+from app.services.technical_error_logs import TechnicalErrorLogService
 from app.services.pipeline_control import (
     TERMINAL_RUN_STATUSES,
     EventContext,
@@ -393,6 +394,22 @@ async def _run(
                 if cancelled_result is not None:
                     return cancelled_result
                 raise
+            await TechnicalErrorLogService.record_isolated(
+                project_id=run.project_id,
+                pipeline_run_id=run.id,
+                stage=failed_stage,
+                error=exc,
+                correlation_id=correlation_id,
+                error_code=decision.code,
+                error_category=getattr(exc, "category", None),
+                retryable=decision.retryable,
+                severity="error" if decision.retryable else "critical",
+                metadata={
+                    "origin": "celery.pipeline.run",
+                    "run_attempt": failed_attempt,
+                    "lease_owner": lease_owner,
+                },
+            )
             project = await db.get(Project, run.project_id)
             project.status = "running" if decision.retryable else "failed"
             project.current_stage = run.current_stage

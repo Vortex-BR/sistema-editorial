@@ -1610,6 +1610,41 @@ class ModelRoute(UUIDMixin, TimestampMixin, Base):
     parameters: Mapped[dict] = mapped_column(JSONB, default=dict)
 
 
+class TechnicalErrorLog(UUIDMixin, TimestampMixin, Base):
+    __tablename__ = "technical_error_logs"
+
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    pipeline_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("pipeline_runs.id", ondelete="CASCADE"), index=True
+    )
+    agent_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="SET NULL"), index=True
+    )
+    stage: Mapped[str] = mapped_column(String(50), index=True)
+    severity: Mapped[str] = mapped_column(
+        String(20), default="error", server_default="error", index=True
+    )
+    error_code: Mapped[str | None] = mapped_column(String(100), index=True)
+    error_category: Mapped[str | None] = mapped_column(String(40))
+    exception_type: Mapped[str | None] = mapped_column(String(255))
+    message: Mapped[str] = mapped_column(Text)
+    operation: Mapped[str | None] = mapped_column(String(30))
+    sql_template: Mapped[str | None] = mapped_column(Text)
+    traceback: Mapped[str | None] = mapped_column(Text)
+    correlation_id: Mapped[str] = mapped_column(String(36), unique=True)
+    retryable: Mapped[bool] = mapped_column(Boolean, default=False, server_default=sa_text("false"))
+    metadata_json: Mapped[dict] = mapped_column("metadata", JSONB, default=dict, server_default="{}")
+
+    __table_args__ = (
+        CheckConstraint(
+            "severity IN ('warning', 'error', 'critical')",
+            name="technical_error_logs_severity_valid",
+        ),
+    )
+
+
 class PipelineEvent(UUIDMixin, Base):
     __tablename__ = "pipeline_events"
     project_id: Mapped[uuid.UUID] = mapped_column(

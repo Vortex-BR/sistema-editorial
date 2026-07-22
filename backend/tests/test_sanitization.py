@@ -122,13 +122,16 @@ def test_redaction_and_public_message_hide_secrets_and_sql():
     technical = (
         "sqlalchemy asyncpg INSERT INTO agent_runs VALUES ($1) "
         "[parameters: {'password': 'db-secret'}] "
-        "https://example.test/path?key=gemini-secret Authorization: Bearer api-secret"
+        "https://example.test/path?key=gemini-secret Authorization: Bearer api-secret "
+        "token=plain-token password:plain-password"
     )
     redacted = redact_sensitive(technical)
 
     assert "db-secret" not in redacted
     assert "gemini-secret" not in redacted
     assert "api-secret" not in redacted
+    assert "plain-token" not in redacted
+    assert "plain-password" not in redacted
     assert "?key=***" in redacted
     assert safe_public_message(technical) == PUBLIC_ERROR_MESSAGE
 

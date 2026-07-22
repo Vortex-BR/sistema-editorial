@@ -18,7 +18,7 @@ from fastapi import (
     Header,
 )
 from fastapi.responses import JSONResponse, Response
-from sqlalchemy import func, select, text
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import (
@@ -52,6 +52,7 @@ from app.db.models import (
     StylePattern,
     StyleSource,
     SuperiorSkill,
+    TechnicalErrorLog,
     SuperiorSkillVersion,
 )
 from app.db.session import SessionLocal, get_db
@@ -795,7 +796,7 @@ async def create_project(
                 "error_code": "EDITORIAL_V3_EXECUTION_DISABLED",
                 "message": (
                     "A execução V3 está desabilitada pela configuração do ambiente. "
-                    "Ative as duas flags V3 somente depois de aplicar a migration 0036 "
+                    "Ative as duas flags V3 somente depois de aplicar a migration 0037 "
                     "e validar as rotas de modelos e pesquisa."
                 ),
             },
@@ -1146,7 +1147,7 @@ async def start_project(
                 "message": (
                     "A execução V3 está desabilitada pela configuração do ambiente. "
                     "Ative EDITORIAL_PIPELINE_V3_ENABLED e "
-                    "EDITORIAL_PIPELINE_V3_EXECUTION_ENABLED após aplicar a migration 0036."
+                    "EDITORIAL_PIPELINE_V3_EXECUTION_ENABLED após aplicar a migration 0037."
                 ),
             },
         )
@@ -1551,6 +1552,321 @@ async def decide_human_editorial_review(
         ),
         "revision_created": result.revision_created,
         "duplicate": result.duplicate,
+    }
+
+
+_ERROR_EVENT_TYPES = {
+    "pipeline.failed",
+    "pipeline.waiting_retry",
+    "pipeline.configuration_required",
+    "stage.failed",
+    "stage.retry_scheduled",
+    "dispatch.failed",
+    "worker.lease_lost",
+}
+
+
+def _enum_text(value):
+    return getattr(value, "value", value)
+
+
+def _admin_diagnostic_text(value, *, limit: int = 8000) -> str | None:
+    if value is None:
+        return None
+    return str(redact_sensitive(sanitize_nul(value)))[:limit]
+
+
+def _error_log_timestamp(item):
+    for name in ("created_at", "finished_at", "failed_at", "started_at", "updated_at"):
+        value = getattr(item, name, None)
+        if value is not None:
+            return value
+    return datetime.min.replace(tzinfo=timezone.utc)
+
+
+@router.get(
+    "/projects/{project_id}/error-logs",
+    dependencies=[Depends(require_admin)],
+)
+async def project_error_logs(
+    project_id: uuid.UUID,
+    pipeline_run_id: uuid.UUID | None = None,
+    limit: int = 100,
+    db: AsyncSession = Depends(get_db),
+):
+    if limit < 1 or limit > 200:
+        raise HTTPException(422, "limit must be between 1 and 200")
+    project = await db.get(Project, project_id)
+    if project is None:
+        raise HTTPException(404, "Project not found")
+    if pipeline_run_id is not None:
+        selected_run = await db.scalar(
+            select(PipelineRun).where(
+                PipelineRun.id == pipeline_run_id,
+                PipelineRun.project_id == project_id,
+            )
+        )
+        if selected_run is None:
+            raise HTTPException(404, "Pipeline run not found for project")
+
+    def scoped(statement, model):
+        statement = statement.where(model.project_id == project_id)
+        if pipeline_run_id is not None:
+            statement = statement.where(model.pipeline_run_id == pipeline_run_id)
+        return statement
+
+    technical_logs = list(
+        (
+            await db.scalars(
+                scoped(select(TechnicalErrorLog), TechnicalErrorLog)
+                .order_by(TechnicalErrorLog.created_at.desc())
+                .limit(limit)
+            )
+        ).all()
+    )
+    pipeline_statement = select(PipelineRun).where(
+        PipelineRun.project_id == project_id,
+        or_(
+            PipelineRun.error_code.is_not(None),
+            PipelineRun.error_message.is_not(None),
+            PipelineRun.status.in_(
+                [PipelineRunStatus.failed, PipelineRunStatus.waiting_retry]
+            ),
+        ),
+    )
+    if pipeline_run_id is not None:
+        pipeline_statement = pipeline_statement.where(PipelineRun.id == pipeline_run_id)
+    pipeline_runs = list(
+        (
+            await db.scalars(
+                pipeline_statement.order_by(PipelineRun.created_at.desc()).limit(limit)
+            )
+        ).all()
+    )
+    agent_runs = list(
+        (
+            await db.scalars(
+                scoped(
+                    select(AgentRun).where(
+                        or_(
+                            AgentRun.error_code.is_not(None),
+                            AgentRun.error.is_not(None),
+                            AgentRun.status == "failed",
+                            AgentRun.recovered.is_(True),
+                        )
+                    ),
+                    AgentRun,
+                )
+                .order_by(AgentRun.created_at.desc())
+                .limit(limit)
+            )
+        ).all()
+    )
+    provider_attempts = list(
+        (
+            await db.scalars(
+                scoped(
+                    select(ProviderAttempt).where(
+                        or_(
+                            ProviderAttempt.error_code.is_not(None),
+                            ProviderAttempt.status != "succeeded",
+                        )
+                    ),
+                    ProviderAttempt,
+                )
+                .order_by(ProviderAttempt.finished_at.desc())
+                .limit(limit)
+            )
+        ).all()
+    )
+    recent_events = list(
+        (
+            await db.scalars(
+                scoped(select(PipelineEvent), PipelineEvent)
+                .order_by(PipelineEvent.created_at.desc())
+                .limit(min(limit * 3, 600))
+            )
+        ).all()
+    )
+    error_events = [
+        item
+        for item in recent_events
+        if item.event_type in _ERROR_EVENT_TYPES
+        or (isinstance(item.payload, dict) and item.payload.get("error_code"))
+    ][:limit]
+
+    agent_by_id = {item.id: item for item in agent_runs}
+    logs: list[dict] = []
+    for item in technical_logs:
+        logs.append(
+            {
+                "id": str(item.id),
+                "source": "internal",
+                "severity": item.severity,
+                "timestamp": item.created_at,
+                "stage": item.stage,
+                "title": item.exception_type or "Falha técnica interna",
+                "message": _admin_diagnostic_text(item.message),
+                "error_code": item.error_code,
+                "error_category": item.error_category,
+                "correlation_id": item.correlation_id,
+                "retryable": item.retryable,
+                "recovered": False,
+                "http_status": None,
+                "provider": None,
+                "model": None,
+                "attempt": (item.metadata_json or {}).get("run_attempt"),
+                "operation": item.operation,
+                "exception_type": item.exception_type,
+                "sql_template": _admin_diagnostic_text(item.sql_template, limit=30000),
+                "traceback": _admin_diagnostic_text(item.traceback, limit=100000),
+                "metadata": redact_sensitive(sanitize_nul(item.metadata_json or {})),
+            }
+        )
+    for item in pipeline_runs:
+        status_value = _enum_text(item.status)
+        logs.append(
+            {
+                "id": f"pipeline:{item.id}",
+                "source": "pipeline",
+                "severity": "error" if status_value == "waiting_retry" else "critical",
+                "timestamp": _error_log_timestamp(item),
+                "stage": item.current_stage,
+                "title": "Falha da execução do pipeline",
+                "message": _admin_diagnostic_text(item.error_message) or item.error_code,
+                "error_code": item.error_code,
+                "error_category": None,
+                "correlation_id": None,
+                "retryable": bool(item.retryable),
+                "recovered": False,
+                "http_status": None,
+                "provider": None,
+                "model": None,
+                "attempt": item.attempt,
+                "operation": None,
+                "exception_type": None,
+                "sql_template": None,
+                "traceback": None,
+                "metadata": {
+                    "status": status_value,
+                    "next_retry_at": item.next_retry_at,
+                    "last_successful_checkpoint": item.last_successful_checkpoint,
+                },
+            }
+        )
+    for item in agent_runs:
+        recovered = bool(getattr(item, "recovered", False))
+        logs.append(
+            {
+                "id": f"agent:{item.id}",
+                "source": "agent",
+                "severity": "warning" if recovered else ("error" if item.retryable else "critical"),
+                "timestamp": _error_log_timestamp(item),
+                "stage": item.agent_role,
+                "title": f"Falha no agente {item.agent_role.replace('_', ' ')}",
+                "message": _admin_diagnostic_text(item.error) or item.error_code,
+                "error_code": item.error_code,
+                "error_category": item.error_category,
+                "correlation_id": item.correlation_id,
+                "retryable": item.retryable,
+                "recovered": recovered,
+                "http_status": item.http_status,
+                "provider": item.provider,
+                "model": item.model,
+                "attempt": item.attempt,
+                "operation": None,
+                "exception_type": None,
+                "sql_template": None,
+                "traceback": None,
+                "metadata": {
+                    "status": _enum_text(item.status),
+                    "fallback_used": bool(item.fallback_used),
+                    "recovery_code": item.recovery_code,
+                    "latency_ms": item.latency_ms,
+                },
+            }
+        )
+    for item in provider_attempts:
+        agent = agent_by_id.get(item.agent_run_id)
+        logs.append(
+            {
+                "id": f"provider:{item.id}",
+                "source": "provider",
+                "severity": "error",
+                "timestamp": _error_log_timestamp(item),
+                "stage": agent.agent_role if agent is not None else "provider",
+                "title": f"Falha no provedor {item.provider}",
+                "message": item.error_code or f"Tentativa {item.status}",
+                "error_code": item.error_code,
+                "error_category": item.error_category,
+                "correlation_id": getattr(agent, "correlation_id", None),
+                "retryable": getattr(agent, "retryable", None),
+                "recovered": bool(getattr(agent, "recovered", False)),
+                "http_status": item.http_status,
+                "provider": item.provider,
+                "model": item.model,
+                "attempt": item.attempt_number,
+                "operation": None,
+                "exception_type": None,
+                "sql_template": None,
+                "traceback": None,
+                "metadata": {
+                    "target_kind": item.target_kind,
+                    "run_attempt": item.run_attempt,
+                    "status": item.status,
+                    "response_received": item.response_received,
+                    "latency_ms": item.latency_ms,
+                },
+            }
+        )
+    for item in error_events:
+        payload = item.payload if isinstance(item.payload, dict) else {}
+        event_type = item.event_type
+        logs.append(
+            {
+                "id": f"event:{item.id}",
+                "source": "event",
+                "severity": "critical" if event_type == "pipeline.failed" else ("warning" if "retry" in event_type else "error"),
+                "timestamp": item.created_at,
+                "stage": item.stage,
+                "title": event_type.replace(".", " · "),
+                "message": _admin_diagnostic_text(payload.get("message")) or event_type,
+                "error_code": payload.get("error_code"),
+                "error_category": payload.get("error_category"),
+                "correlation_id": payload.get("correlation_id"),
+                "retryable": payload.get("retryable"),
+                "recovered": False,
+                "http_status": payload.get("http_status"),
+                "provider": payload.get("provider"),
+                "model": payload.get("model"),
+                "attempt": item.stage_attempt or item.run_attempt,
+                "operation": None,
+                "exception_type": None,
+                "sql_template": None,
+                "traceback": None,
+                "metadata": redact_sensitive(sanitize_nul(payload)),
+            }
+        )
+
+    logs.sort(
+        key=lambda item: item["timestamp"] or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+    logs = logs[:limit]
+    summary = {
+        "critical": sum(item["severity"] == "critical" for item in logs),
+        "error": sum(item["severity"] == "error" for item in logs),
+        "warning": sum(item["severity"] == "warning" for item in logs),
+        "retryable": sum(item["retryable"] is True for item in logs),
+        "recovered": sum(item["recovered"] is True for item in logs),
+    }
+    return {
+        "project_id": project_id,
+        "pipeline_run_id": pipeline_run_id,
+        "generated_at": datetime.now(timezone.utc),
+        "total": len(logs),
+        "summary": summary,
+        "logs": logs,
     }
 
 

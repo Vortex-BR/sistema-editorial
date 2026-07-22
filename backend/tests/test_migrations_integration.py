@@ -16,7 +16,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 EXPECTED_POSTGRES_MAJOR = 17
-EXPECTED_ALEMBIC_HEAD = "0036"
+EXPECTED_ALEMBIC_HEAD = "0037"
 
 
 async def _status_schema(connection: asyncpg.Connection) -> dict[str, list[tuple]]:

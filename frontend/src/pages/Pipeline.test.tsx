@@ -689,3 +689,49 @@ describe('Pipeline editorial export',()=>{
     expect(screen.queryByRole('button',{name:'Executar nova pesquisa'})).toBeNull()
   })
 })
+
+describe('Project error logs tab',()=>{
+  it('loads run-scoped technical logs and exposes diagnostic details',async()=>{
+    const user=userEvent.setup()
+    const failedRun={
+      id:'run-1',status:'failed',current_stage:'source_reader',
+      error_code:'sqlalchemy.exc.IntegrityError',
+      error_message:'Falha técnica registrada',
+    }
+    const errorLogs={
+      project_id:'project-1',pipeline_run_id:'run-1',generated_at:'2026-07-21T20:00:00Z',total:1,
+      summary:{critical:1,error:0,warning:0,retryable:0,recovered:0},
+      logs:[{
+        id:'log-1',source:'internal',severity:'critical',timestamp:'2026-07-21T19:57:33Z',
+        stage:'source_reader',title:'sqlalchemy.exc.IntegrityError',message:'duplicate key value',
+        error_code:'sqlalchemy.exc.IntegrityError',error_category:'persistence',
+        correlation_id:'correlation-1',retryable:false,recovered:false,http_status:null,
+        provider:null,model:null,attempt:1,operation:'INSERT',exception_type:'sqlalchemy.exc.IntegrityError',
+        sql_template:'INSERT INTO v3_source_documents (...)',traceback:'Traceback sanitizado',metadata:{run_attempt:1},
+      }],
+    }
+    mockAdminApi.mockImplementation(async (path)=>{
+      if(path==='/projects/project-1/error-logs?pipeline_run_id=run-1&limit=200') return errorLogs as never
+      if(path==='/projects/project-1/events/ticket'){
+        return {ticket:eventTicket,expires_in:60,protocol:'seo-events'} as never
+      }
+      return {
+        ...detail,project:{...detail.project,status:'failed',current_stage:'source_reader'},
+        pipeline_runs:[failedRun],latest_pipeline_run:failedRun,selected_pipeline_run:failedRun,
+        article_version:null,article_pipeline_run_id:null,article_matches_selected_pipeline_run:null,
+      } as never
+    })
+
+    renderPipeline()
+    await user.click(await screen.findByRole('button',{name:/Logs de erros/}))
+
+    expect(await screen.findByText('duplicate key value')).toBeTruthy()
+    expect(screen.getAllByText('sqlalchemy.exc.IntegrityError').length).toBeGreaterThan(0)
+    expect(mockAdminApi).toHaveBeenCalledWith(
+      '/projects/project-1/error-logs?pipeline_run_id=run-1&limit=200',
+    )
+    await user.click(screen.getAllByText('sqlalchemy.exc.IntegrityError')[0])
+    expect(await screen.findByText('Referência')).toBeTruthy()
+    expect(screen.getByText('correlation-1')).toBeTruthy()
+  })
+})
