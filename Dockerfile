@@ -1,4 +1,4 @@
-FROM node:22-alpine AS frontend-build
+FROM node:26-alpine AS frontend-build
 
 WORKDIR /frontend
 COPY frontend/package.json frontend/package-lock.json ./
@@ -8,14 +8,14 @@ ARG VITE_API_URL=/api/v1
 ENV VITE_API_URL=${VITE_API_URL}
 RUN npm run build
 
-FROM python:3.12-slim AS backend-dependencies
+FROM python:3.14-slim AS backend-dependencies
 
 WORKDIR /build
 COPY backend/requirements-runtime.txt ./requirements-runtime.txt
 RUN python -m pip install --no-cache-dir \
         --prefix=/install -r requirements-runtime.txt
 
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 WORKDIR /app/backend
 ARG GIT_SHA=
